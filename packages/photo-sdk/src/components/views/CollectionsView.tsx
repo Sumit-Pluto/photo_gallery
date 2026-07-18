@@ -4,10 +4,12 @@ import { useState } from 'react';
 
 import { formatDay } from '../../lib/format';
 import { groupByTime } from '../../lib/grouping';
+import { resolveLabel } from '../../lib/smartAlbums';
 import { Icon, type IconName } from '../../icons';
 import { useGallery, useGalleryStoreApi } from '../../store/context';
 import { albumMedia, liveMedia, objectLabelCounts } from '../../store/selectors';
 import type { MediaItem, ViewId } from '../../types';
+import { openContextMenu } from '../ContextMenu';
 import { promptAlbumName } from '../modals';
 
 function SectionHeader({
@@ -97,6 +99,7 @@ export function CollectionsView() {
   const api = useGalleryStoreApi();
   const media = useGallery((s) => s.media);
   const albums = useGallery((s) => s.albums);
+  const labelAliases = useGallery((s) => s.labelAliases);
   const live = liveMedia(media);
 
   const first = (pred: (m: MediaItem) => boolean) => live.find(pred);
@@ -105,9 +108,24 @@ export function CollectionsView() {
 
   const recentDays = groupByTime(live, 'day').slice(0, 8);
   const featured = [...live].sort((a, b) => b.takenAt - a.takenAt).slice(0, 12);
-  const objectEntries = [...objectLabelCounts(media).entries()]
+  const objectEntries = [...objectLabelCounts(media, labelAliases).entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 14);
+
+  // Right-click an object card → permanently rename its tag (car → excavator).
+  const renameTag = (label: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    openContextMenu(e.clientX, e.clientY, [
+      {
+        label: 'Rename Tag',
+        icon: 'tag',
+        onClick: () =>
+          promptAlbumName('Rename Tag', label, (name) => api.getState().renameLabel(label, name), {
+            placeholder: 'Tag name',
+          }),
+      },
+    ]);
+  };
 
   return (
     <div className="apg-scroll">
@@ -184,10 +202,15 @@ export function CollectionsView() {
                   type="button"
                   className="apg-pinned-card"
                   onClick={() => api.getState().setView(`sys:obj:${label}` as ViewId)}
+                  onContextMenu={renameTag(label)}
                   aria-label={`${count} photos containing ${label}`}
                 >
                   {(() => {
-                    const cover = live.find((m) => m.objectLabels.includes(label));
+                    // Match on the resolved label so the cover works for items still
+                    // stored under the original detector label.
+                    const cover = live.find((m) =>
+                      m.objectLabels.some((l) => resolveLabel(l, labelAliases) === label),
+                    );
                     return cover ? <img src={cover.thumbnail ?? cover.src} alt="" draggable={false} /> : null;
                   })()}
                   <span className="apg-pinned-card__label" style={{ textTransform: 'capitalize' }}>

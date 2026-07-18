@@ -31,6 +31,7 @@ export function summarizeEdits(edits?: EditState): string[] {
     if (edits.overlays?.some((o) => o.kind === 'text')) c.push('Text');
   }
   if (edits.audio?.muted) c.push('Muted original audio');
+  if (edits.audio?.denoise) c.push('Reduced audio noise');
   if (edits.audio?.musicSrc) c.push('Added music');
   if (edits.audio?.fadeIn || edits.audio?.fadeOut) c.push('Audio fade');
   return c.length ? c : ['Edited'];

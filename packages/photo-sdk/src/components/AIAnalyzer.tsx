@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 
 import type { AIProvider } from '../ai/types';
 import { PET_LABELS } from '../constants';
+import { resolveLabel } from '../lib/smartAlbums';
 import { sanitizeOcrText } from '../lib/text';
 import { useGallery, useGalleryStoreApi } from '../store/context';
 import type { MediaItem } from '../types';
@@ -99,8 +100,15 @@ export function AIAnalyzer({ provider }: { provider: AIProvider }) {
         const patch: Partial<MediaItem> = { analyzedAt: Date.now() };
         if (objects) {
           patch.objects = objects;
+          // Map each detected label through the user's rename map so future uploads
+          // are stored/grouped under the renamed label instead of a fresh class.
+          const aliases = api.getState().labelAliases;
           patch.objectLabels = [
-            ...new Set(objects.filter((o) => o.confidence >= CONFIDENCE).map((o) => o.label)),
+            ...new Set(
+              objects
+                .filter((o) => o.confidence >= CONFIDENCE)
+                .map((o) => resolveLabel(o.label, aliases)),
+            ),
           ];
         }
         if (faces) patch.faces = faces;

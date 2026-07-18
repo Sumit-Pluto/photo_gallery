@@ -1,4 +1,5 @@
-import { matchesRuleSet, resolveSmartAlbum } from '../lib/smartAlbums';
+import { matchesRuleSet, resolveLabel, resolveSmartAlbum } from '../lib/smartAlbums';
+import type { LabelAliases } from '../lib/smartAlbums';
 import type { Album, MediaItem } from '../types';
 import type { GalleryState, GridFilter } from './store';
 
@@ -18,9 +19,9 @@ export function albumById(albums: Album[], id: string): Album | undefined {
 }
 
 /** Resolve the members of any album (smart albums are computed live). */
-export function albumMedia(album: Album, media: MediaItem[]): MediaItem[] {
+export function albumMedia(album: Album, media: MediaItem[], aliases: LabelAliases = {}): MediaItem[] {
   if (album.kind === 'smart' && album.ruleSet) {
-    const ids = new Set(resolveSmartAlbum(album, media));
+    const ids = new Set(resolveSmartAlbum(album, media, aliases));
     return liveMedia(media)
       .filter((m) => ids.has(m.id))
       .sort((a, b) => b.takenAt - a.takenAt);
@@ -73,7 +74,7 @@ export function searchMedia(items: MediaItem[], query: string): MediaItem[] {
  * grid filter, search and object-focus. Returns reverse-chronological order.
  */
 export function mediaForView(state: GalleryState): MediaItem[] {
-  const { media, albums, view, gridFilter, searchQuery, objectFocus, tagFocus, personFocus, searchPreset, semanticResults, recentlyViewed } =
+  const { media, albums, view, gridFilter, searchQuery, objectFocus, tagFocus, personFocus, searchPreset, semanticResults, recentlyViewed, labelAliases } =
     state;
   let items: MediaItem[];
   // When a search ranks results (keyword + semantic), preserve that order
@@ -103,7 +104,7 @@ export function mediaForView(state: GalleryState): MediaItem[] {
     items = liveMedia(media);
   } else if (view.startsWith('album:') || view.startsWith('sys:')) {
     const album = albumById(albums, view);
-    items = album ? albumMedia(album, media) : [];
+    items = album ? albumMedia(album, media, labelAliases) : [];
   } else if (view === 'favourites') {
     items = liveMedia(media).filter((m) => m.favorite);
   } else if (view === 'recently-saved') {
@@ -120,7 +121,10 @@ export function mediaForView(state: GalleryState): MediaItem[] {
     items = applyGridFilter(items, gridFilter);
   }
   if (objectFocus) {
-    items = items.filter((m) => m.objectLabels.includes(objectFocus));
+    // Match on the resolved (renamed) label so focusing a renamed object still
+    // surfaces photos whose stored label is the original detector label.
+    const focus = resolveLabel(objectFocus, labelAliases);
+    items = items.filter((m) => m.objectLabels.some((l) => resolveLabel(l, labelAliases) === focus));
   }
   if (tagFocus) {
     items = items.filter((m) => m.tags.includes(tagFocus));
@@ -153,11 +157,14 @@ export function mediaForView(state: GalleryState): MediaItem[] {
   return items;
 }
 
-/** Distinct object labels across the live library (for AI auto-albums). */
-export function objectLabelCounts(media: MediaItem[]): Map<string, number> {
+/** Distinct object labels across the live library (for AI auto-albums), resolved
+ * through the user's rename map so renamed tags collapse into one bucket. */
+export function objectLabelCounts(media: MediaItem[], aliases: LabelAliases = {}): Map<string, number> {
   const counts = new Map<string, number>();
   for (const m of liveMedia(media)) {
-    for (const label of m.objectLabels) {
+    // De-dupe per item after resolving so two labels renamed to the same value
+    // only count that photo once.
+    for (const label of new Set(m.objectLabels.map((l) => resolveLabel(l, aliases)))) {
       counts.set(label, (counts.get(label) ?? 0) + 1);
     }
   }

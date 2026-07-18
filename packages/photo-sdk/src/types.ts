@@ -91,6 +91,8 @@ export interface EditState {
     /** Master fade in / out over the whole exported clip, in seconds. */
     fadeIn?: number;
     fadeOut?: number;
+    /** Reduce background noise on the original audio during export (in-browser). */
+    denoise?: boolean;
   };
 }
 

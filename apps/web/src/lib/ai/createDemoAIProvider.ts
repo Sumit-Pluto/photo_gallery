@@ -50,6 +50,40 @@ export function createDemoAIProvider(): AIProvider {
         return removeBackground(inputBlob, { output: { format: 'image/png' } });
       }
 
+      // Outpaint / expand-canvas: pad the image with a neutral border, mark that
+      // border WHITE in the mask, and run it through the same inpaint path as
+      // generative-fill — no extra backend route needed.
+      if (op.type === 'outpaint') {
+        const { imageBase64: padded, maskBase64: border } = padForOutpaint(
+          image,
+          typeof op.factor === 'number' ? op.factor : 1.5,
+        );
+        const outParams: Record<string, unknown> = {};
+        if (typeof op.strength === 'number') outParams.strength = op.strength;
+        const outRes = await fetch('/api/ai/edit', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            imageBase64: padded,
+            mimeType: 'image/png',
+            op: {
+              type: 'generative-fill',
+              prompt:
+                op.prompt ||
+                'Extend and continue the scene naturally, matching lighting, colors and perspective.',
+            },
+            maskBase64: border,
+            params: outParams,
+          }),
+        });
+        if (!outRes.ok) {
+          const err = (await outRes.json().catch(() => ({}))) as { error?: string };
+          throw new Error(err.error || `AI request failed (${outRes.status}).`);
+        }
+        const outJson = (await outRes.json()) as { imageBase64: string; mimeType?: string };
+        return base64ToBlob(outJson.imageBase64, outJson.mimeType || 'image/png');
+      }
+
       const { data, mimeType, width, height } = imageToBase64(image, 1280);
       // SD 3.5 masked ops (#9) carry an ImageData mask — rasterize it to a PNG
       // matched to the (downscaled) image dims, and strip it from the op since
@@ -78,6 +112,59 @@ export function createDemoAIProvider(): AIProvider {
       };
       return base64ToBlob(imageBase64, outMime || 'image/png');
     },
+
+    // Voice annotation: record → (optional denoise) → transcribe. Both proxy
+    // through server routes so the RunPod key stays server-side.
+    async transcribeAudio(audioBase64) {
+      const res = await fetch('/api/ai/transcribe', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ audio: audioBase64 }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error || `Transcription failed (${res.status}).`);
+      }
+      const { transcript } = (await res.json()) as { transcript?: string };
+      return (transcript ?? '').trim();
+    },
+
+    async denoiseAudio(audioBase64) {
+      const res = await fetch('/api/ai/denoise', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ audio: audioBase64 }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error || `Denoise failed (${res.status}).`);
+      }
+      const { audio } = (await res.json()) as { audio?: string };
+      return audio ?? audioBase64;
+    },
+
+    // Camera-tilt estimation is opt-in (needs the RunPod tilt endpoint deployed);
+    // gate it so the editor's Auto-straighten button only appears when configured.
+    estimateTilt:
+      process.env.NEXT_PUBLIC_APG_RUNPOD_TILT === 'true'
+        ? async (_item, image) => {
+            const { data } = imageToBase64(image, 1024);
+            const res = await fetch('/api/ai/tilt', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ image: data }),
+            });
+            if (!res.ok) {
+              const err = (await res.json().catch(() => ({}))) as { error?: string };
+              throw new Error(err.error || `Tilt estimate failed (${res.status}).`);
+            }
+            return (await res.json()) as {
+              rollDegrees: number;
+              pitchDegrees: number;
+              fovDegrees: number;
+            };
+          }
+        : undefined,
   };
 }
 
@@ -104,4 +191,52 @@ function base64ToBlob(base64: string, mime: string): Blob {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Blob([bytes], { type: mime });
+}
+
+/**
+ * Pad an image with a neutral border for outpaint and return {paddedImage, mask}
+ * as base64 PNG — the border is WHITE in the mask (regenerate), the original
+ * image area BLACK (keep). Capped at 1280px on the long side.
+ */
+function padForOutpaint(
+  image: ImageBitmap | HTMLImageElement,
+  factor: number,
+): { imageBase64: string; maskBase64: string } {
+  const w = (image as HTMLImageElement).naturalWidth || (image as ImageBitmap).width;
+  const h = (image as HTMLImageElement).naturalHeight || (image as ImageBitmap).height;
+  const f = Math.max(1.1, Math.min(2, factor));
+  const maxDim = 1280;
+  let pw = Math.round(w * f);
+  let ph = Math.round(h * f);
+  const scale = Math.min(1, maxDim / Math.max(pw, ph));
+  pw = Math.max(16, Math.round(pw * scale));
+  ph = Math.max(16, Math.round(ph * scale));
+  const iw = Math.max(1, Math.round(w * scale));
+  const ih = Math.max(1, Math.round(h * scale));
+  const ox = Math.floor((pw - iw) / 2);
+  const oy = Math.floor((ph - ih) / 2);
+
+  const imgCanvas = document.createElement('canvas');
+  imgCanvas.width = pw;
+  imgCanvas.height = ph;
+  const ictx = imgCanvas.getContext('2d');
+  if (!ictx) throw new Error('Canvas not supported.');
+  ictx.fillStyle = '#808080';
+  ictx.fillRect(0, 0, pw, ph);
+  ictx.drawImage(image as CanvasImageSource, ox, oy, iw, ih);
+
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = pw;
+  maskCanvas.height = ph;
+  const mctx = maskCanvas.getContext('2d');
+  if (!mctx) throw new Error('Canvas not supported.');
+  mctx.fillStyle = '#ffffff';
+  mctx.fillRect(0, 0, pw, ph);
+  mctx.fillStyle = '#000000';
+  mctx.fillRect(ox, oy, iw, ih);
+
+  return {
+    imageBase64: imgCanvas.toDataURL('image/png').split(',')[1] ?? '',
+    maskBase64: maskCanvas.toDataURL('image/png').split(',')[1] ?? '',
+  };
 }

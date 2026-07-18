@@ -33,6 +33,28 @@ export interface AIProvider {
     image: ImageBitmap | HTMLImageElement,
     op: GenerativeEditOp,
   ): Promise<Blob>;
+
+  /**
+   * Transcribe recorded speech (base64 WAV, 16 kHz mono PCM16) to text.
+   * Powers voice input for photo annotations / comments.
+   */
+  transcribeAudio?(audioBase64: string): Promise<string>;
+
+  /**
+   * Denoise recorded audio (base64 WAV) → cleaned base64 WAV. Useful before
+   * transcription when the recording was made on a noisy site.
+   */
+  denoiseAudio?(audioBase64: string): Promise<string>;
+
+  /** Estimate camera tilt (roll/pitch/fov, degrees) for auto-straightening. */
+  estimateTilt?(item: MediaItem, image: ImageBitmap | HTMLImageElement): Promise<TiltEstimate>;
+}
+
+/** Camera-tilt estimate (degrees). `rollDegrees` = in-plane rotation to correct. */
+export interface TiltEstimate {
+  rollDegrees: number;
+  pitchDegrees: number;
+  fovDegrees: number;
 }
 
 export type GenerativeEditOp =
@@ -43,6 +65,8 @@ export type GenerativeEditOp =
   | { type: 'restore' }
   | { type: 'upscale'; factor: 2 | 4 }
   | { type: 'colorize' }
+  /** Outpaint / expand-canvas: pad the image and generatively fill the new border. */
+  | { type: 'outpaint'; prompt?: string; factor?: number; strength?: number }
   /**
    * Free-form natural-language edit instruction. `strength` (0..1) controls how
    * strongly the edit is applied (subtle → strong); the backend maps it to the

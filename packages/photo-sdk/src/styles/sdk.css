@@ -1659,6 +1659,41 @@
 .apg-comment-form__author:focus,
 .apg-comment-form__input:focus { outline: none; border-color: var(--apg-accent); }
 .apg-comment-form__post { align-self: flex-end; }
+.apg-voice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.apg-voice__mic { display: inline-flex; align-items: center; gap: 5px; }
+.apg-voice__mic--rec {
+  background: var(--apg-danger, #e5484d);
+  border-color: var(--apg-danger, #e5484d);
+  color: #fff;
+}
+.apg-voice__denoise {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; opacity: 0.85; cursor: pointer; user-select: none;
+}
+.apg-voice__denoise input { accent-color: var(--apg-accent); }
+.apg-voice__status { font-size: 12px; opacity: 0.7; min-height: 1em; }
+.apg-maskbrush {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 20px;
+}
+.apg-maskbrush__title { color: #fff; font-size: 14px; font-weight: 600; }
+.apg-maskbrush__stage {
+  position: relative; width: 100%;
+  max-width: min(90vw, 900px); max-height: 68vh;
+}
+.apg-maskbrush__img,
+.apg-maskbrush__canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px;
+}
+.apg-maskbrush__img { object-fit: contain; user-select: none; -webkit-user-drag: none; }
+.apg-maskbrush__canvas { cursor: crosshair; touch-action: none; }
+.apg-maskbrush__bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  width: 100%; max-width: min(90vw, 900px);
+}
+.apg-maskbrush__brush { display: inline-flex; align-items: center; gap: 6px; color: #fff; font-size: 12px; }
 
 /* ---- Versions & Audit browser view ---- */
 .apg-audit-list { display: flex; flex-direction: column; gap: 8px; }

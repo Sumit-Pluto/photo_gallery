@@ -794,6 +794,14 @@ export function VideoEditor() {
                     onChange={(e) => update({ audio: { ...edits.audio, muted: e.target.checked } })} />
                   Mute original audio
                 </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!edits.audio?.denoise}
+                    onChange={(e) => update({ audio: { ...edits.audio, denoise: e.target.checked } })}
+                  />
+                  Reduce background noise
+                </label>
                 {!edits.audio?.muted ? (
                   <label className="apg-vedit__row">
                     <span>Original volume {Math.round((edits.audio?.originalVolume ?? 1) * 100)}%</span>

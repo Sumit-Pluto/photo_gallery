@@ -1,7 +1,19 @@
 import type { Album, MediaItem, SmartRule, SmartRuleSet } from '../types';
 
+/** The user's permanent tag-rename map: canonical lowercased detector label → chosen label. */
+export type LabelAliases = Record<string, string>;
+
+/**
+ * Resolve a detected object label through the user's rename alias map. Keys are
+ * canonical lowercased detector labels ("car"); the value is the label the user
+ * renamed it to ("excavator"). Returns the original label when no alias applies.
+ */
+export function resolveLabel(label: string, aliases: LabelAliases = {}): string {
+  return aliases[label.trim().toLowerCase()] ?? label;
+}
+
 /** Evaluate a single smart rule against a media item. */
-function evalRule(item: MediaItem, rule: SmartRule): boolean {
+function evalRule(item: MediaItem, rule: SmartRule, aliases: LabelAliases = {}): boolean {
   const { field, op, value } = rule;
 
   const get = (): unknown => {
@@ -18,7 +30,9 @@ function evalRule(item: MediaItem, rule: SmartRule): boolean {
       case 'isLivePhoto': return Boolean(item.isLivePhoto);
       case 'isPanorama': return Boolean(item.isPanorama);
       case 'tag': return item.tags;
-      case 'object': return item.objectLabels;
+      // Resolve object labels through the rename map so a photo detected as the
+      // original label still matches the renamed album's rule.
+      case 'object': return item.objectLabels.map((l) => resolveLabel(l, aliases));
       case 'person': return item.personIds;
       default: return undefined;
     }
@@ -48,18 +62,26 @@ function evalRule(item: MediaItem, rule: SmartRule): boolean {
 }
 
 /** Does an item satisfy a rule set (AND/OR over its rules)? */
-export function matchesRuleSet(item: MediaItem, ruleSet: SmartRuleSet): boolean {
+export function matchesRuleSet(
+  item: MediaItem,
+  ruleSet: SmartRuleSet,
+  aliases: LabelAliases = {},
+): boolean {
   if (item.deletedAt) return false; // trashed items never appear in smart albums
   if (ruleSet.rules.length === 0) return true;
   return ruleSet.match === 'all'
-    ? ruleSet.rules.every((r) => evalRule(item, r))
-    : ruleSet.rules.some((r) => evalRule(item, r));
+    ? ruleSet.rules.every((r) => evalRule(item, r, aliases))
+    : ruleSet.rules.some((r) => evalRule(item, r, aliases));
 }
 
 /** Resolve the live member ids of a smart album from the full library. */
-export function resolveSmartAlbum(album: Album, items: MediaItem[]): string[] {
+export function resolveSmartAlbum(
+  album: Album,
+  items: MediaItem[],
+  aliases: LabelAliases = {},
+): string[] {
   if (!album.ruleSet) return [];
-  return items.filter((i) => matchesRuleSet(i, album.ruleSet!)).map((i) => i.id);
+  return items.filter((i) => matchesRuleSet(i, album.ruleSet!, aliases)).map((i) => i.id);
 }
 
 /**
@@ -141,12 +163,18 @@ function titleCase(s: string): string {
  *
  * @param minCount only surface a label once it appears on at least this many photos.
  */
-export function objectSmartAlbums(media: MediaItem[], now: number, minCount = 1): Album[] {
+export function objectSmartAlbums(
+  media: MediaItem[],
+  now: number,
+  aliases: LabelAliases = {},
+  minCount = 1,
+): Album[] {
   const counts = new Map<string, number>();
   for (const m of media) {
     if (m.deletedAt || m.hidden) continue;
-    // De-dupe labels within one item so a single photo counts once per label.
-    for (const label of new Set(m.objectLabels)) {
+    // Resolve labels through the rename map, then de-dupe within one item so a
+    // single photo counts once per (renamed) label and renamed labels regroup.
+    for (const label of new Set(m.objectLabels.map((l) => resolveLabel(l, aliases)))) {
       const key = label.trim().toLowerCase();
       if (!key) continue;
       counts.set(key, (counts.get(key) ?? 0) + 1);

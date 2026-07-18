@@ -4,6 +4,11 @@ export interface PersistedState {
   media: MediaItem[];
   albums: Album[];
   people: Person[];
+  /**
+   * User's permanent object-tag renames (canonical lowercased detector label →
+   * chosen label). Optional for backward compatibility with pre-rename data.
+   */
+  labelAliases?: Record<string, string>;
   version: number;
 }
 

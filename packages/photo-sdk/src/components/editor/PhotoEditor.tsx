@@ -17,6 +17,7 @@ import { addToAlbumPicker, confirmAction } from '../modals';
 import { useAIProvider } from '../aiContext';
 import { Annotations, type AnnotationTool } from './Annotations';
 import { CropBox, type CropRect } from './CropBox';
+import { MaskBrush } from './MaskBrush';
 
 const RATIOS: Array<{ label: string; value: number | null }> = [
   { label: 'Free', value: null },
@@ -100,6 +101,9 @@ export function PhotoEditor() {
   const [aiResultUrl, setAiResultUrl] = useState<string | null>(null);
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiStrength, setAiStrength] = useState(0.5);
+  const [maskMode, setMaskMode] = useState<'magic-eraser' | 'generative-fill' | null>(null);
+  const [tiltBusy, setTiltBusy] = useState(false);
+  const [tiltError, setTiltError] = useState<string | null>(null);
   const [annTool, setAnnTool] = useState<AnnotationTool>('rect');
   const [annColor, setAnnColor] = useState<string>('#ff3b30');
   const [cropRatio, setCropRatio] = useState<number | null>(null);
@@ -169,6 +173,22 @@ export function PhotoEditor() {
       setAiError(err instanceof Error ? err.message : 'AI edit failed. Please try again.');
     } finally {
       setAiBusy(false);
+    }
+  };
+
+  const autoStraighten = async () => {
+    if (!provider?.estimateTilt) return;
+    setTiltBusy(true);
+    setTiltError(null);
+    try {
+      const img = await loadCrossOriginImage(item.src);
+      const t = await provider.estimateTilt(item, img);
+      const roll = Math.max(-45, Math.min(45, Math.round(t.rollDegrees)));
+      setEdits((e) => ({ ...e, straighten: roll }));
+    } catch (err) {
+      setTiltError(err instanceof Error ? err.message : 'Could not estimate tilt.');
+    } finally {
+      setTiltBusy(false);
     }
   };
 
@@ -539,6 +559,20 @@ export function PhotoEditor() {
                     Reset Straighten
                   </button>
                 ) : null}
+                {provider?.estimateTilt ? (
+                  <button
+                    type="button"
+                    className="apg-editor__tab"
+                    disabled={tiltBusy}
+                    onClick={() => void autoStraighten()}
+                  >
+                    <Icon name="wand" size={15} />{' '}
+                    {tiltBusy ? 'Analyzing tilt…' : 'Auto-straighten (fix camera tilt)'}
+                  </button>
+                ) : null}
+                {tiltError ? (
+                  <p style={{ color: '#ff6b6b', fontSize: 12, margin: 0 }}>{tiltError}</p>
+                ) : null}
               </div>
             ) : null}
 
@@ -675,6 +709,36 @@ export function PhotoEditor() {
                   </button>
                 </div>
 
+                <div style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
+                <p style={{ color: '#9b9ba1', fontSize: 12, margin: 0 }}>
+                  Brush &amp; expand tools — inpaint / outpaint.
+                </p>
+                <button
+                  type="button"
+                  className="apg-editor__tab"
+                  disabled={aiBusy}
+                  onClick={() => setMaskMode('magic-eraser')}
+                >
+                  <Icon name="wand" size={16} /> Magic Eraser (remove an object)
+                </button>
+                <button
+                  type="button"
+                  className="apg-editor__tab"
+                  disabled={aiBusy || !aiPrompt.trim()}
+                  title={!aiPrompt.trim() ? 'Type what to put there in the prompt box above first' : undefined}
+                  onClick={() => setMaskMode('generative-fill')}
+                >
+                  <Icon name="image" size={16} /> Generative Fill (paint + prompt)
+                </button>
+                <button
+                  type="button"
+                  className="apg-editor__tab"
+                  disabled={aiBusy}
+                  onClick={() => void runAI({ type: 'outpaint', prompt: aiPrompt.trim() || undefined })}
+                >
+                  <Icon name="crop" size={16} /> Expand Image (Outpaint)
+                </button>
+
                 {aiResultUrl ? (
                   <button type="button" className="apg-editor__tab" onClick={clearAI} disabled={aiBusy}>
                     Discard AI result
@@ -687,6 +751,28 @@ export function PhotoEditor() {
             ) : null}
           </div>
         </div>
+
+        {maskMode ? (
+          <MaskBrush
+            src={item.src}
+            aspect={imgAspect}
+            title={
+              maskMode === 'magic-eraser'
+                ? 'Paint over what to remove'
+                : 'Paint the area to replace (uses your prompt)'
+            }
+            onCancel={() => setMaskMode(null)}
+            onApply={(mask) => {
+              const m = maskMode;
+              setMaskMode(null);
+              if (m === 'generative-fill') {
+                void runAI({ type: 'generative-fill', prompt: aiPrompt.trim() || 'fill naturally', mask });
+              } else {
+                void runAI({ type: 'magic-eraser', mask });
+              }
+            }}
+          />
+        ) : null}
       </motion.div>
     </AnimatePresence>
   );

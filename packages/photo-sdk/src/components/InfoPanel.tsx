@@ -5,7 +5,9 @@ import { useEffect, useRef, useState } from 'react';
 import { sourceLabel } from '../lib/classify';
 import { editFilterCss, editTransformCss } from '../lib/edits';
 import { formatBytes, formatDate, formatDuration, formatTime } from '../lib/format';
+import { blobToWavBase64, startRecording, wavBase64ToBlob, type Recorder } from '../lib/audioCapture';
 import { Icon } from '../icons';
+import { useAIProvider } from './aiContext';
 import { useGallery, useGalleryStoreApi } from '../store/context';
 import type { MediaItem } from '../types';
 
@@ -69,6 +71,10 @@ export function InfoPanel() {
                 .filter(Boolean)
                 .join(' · ')}
             />
+          ) : null}
+          {item.exif?.LensModel ? <Row label="Lens" value={String(item.exif.LensModel)} /> : null}
+          {item.exif?.Orientation ? (
+            <Row label="Orientation" value={orientationLabel(item.exif.Orientation)} />
           ) : null}
 
           {item.objectLabels.length ? (
@@ -226,6 +232,49 @@ function Comments({ item }: { item: MediaItem }) {
     return window.localStorage.getItem('apg:comment-author') || 'You';
   });
 
+  const provider = useAIProvider();
+  const canVoice = Boolean(provider?.transcribeAudio);
+  const canDenoise = Boolean(provider?.denoiseAudio);
+  const [recording, setRecording] = useState(false);
+  const [denoise, setDenoise] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
+  const recorderRef = useRef<Recorder | null>(null);
+
+  const startVoice = async () => {
+    setVoiceStatus(null);
+    try {
+      recorderRef.current = await startRecording();
+      setRecording(true);
+    } catch (e) {
+      setVoiceStatus(e instanceof Error ? e.message : 'Microphone unavailable.');
+    }
+  };
+
+  const stopVoice = async () => {
+    const rec = recorderRef.current;
+    recorderRef.current = null;
+    setRecording(false);
+    if (!rec || !provider?.transcribeAudio) return;
+    try {
+      const blob = await rec.stop();
+      let wav16: string;
+      if (denoise && provider.denoiseAudio) {
+        setVoiceStatus('Reducing noise…');
+        const wav48 = await blobToWavBase64(blob, 48000);
+        const cleaned = await provider.denoiseAudio(wav48);
+        wav16 = await blobToWavBase64(wavBase64ToBlob(cleaned), 16000);
+      } else {
+        wav16 = await blobToWavBase64(blob, 16000);
+      }
+      setVoiceStatus('Transcribing…');
+      const spoken = (await provider.transcribeAudio(wav16)).trim();
+      if (spoken) setText((prev) => (prev ? `${prev} ${spoken}` : spoken));
+      setVoiceStatus(null);
+    } catch (e) {
+      setVoiceStatus(e instanceof Error ? e.message : 'Could not transcribe audio.');
+    }
+  };
+
   const post = () => {
     const t = text.trim();
     if (!t) return;
@@ -299,6 +348,36 @@ function Comments({ item }: { item: MediaItem }) {
           rows={2}
           maxLength={2000}
         />
+        {canVoice ? (
+          <div className="apg-voice">
+            <button
+              type="button"
+              className={`apg-btn apg-btn--small apg-voice__mic${recording ? ' apg-voice__mic--rec' : ''}`}
+              onClick={recording ? stopVoice : startVoice}
+              aria-label={recording ? 'Stop recording' : 'Record a voice comment'}
+              title={recording ? 'Stop & transcribe' : 'Speak your comment'}
+            >
+              <Icon name={recording ? 'check' : 'mic'} size={14} />
+              {recording ? 'Stop' : 'Speak'}
+            </button>
+            {canDenoise ? (
+              <label
+                className="apg-voice__denoise"
+                title="Clean up background noise before transcribing"
+              >
+                <input
+                  type="checkbox"
+                  checked={denoise}
+                  onChange={(e) => setDenoise(e.target.checked)}
+                />
+                Reduce noise
+              </label>
+            ) : null}
+            <span className="apg-voice__status" aria-live="polite">
+              {recording ? '● Listening…' : (voiceStatus ?? '')}
+            </span>
+          </div>
+        ) : null}
         <button
           type="button"
           className="apg-btn apg-btn--small apg-comment-form__post"
@@ -319,6 +398,22 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="apg-info__row-value">{value}</span>
     </div>
   );
+}
+
+// EXIF Orientation codes 1–8 → human text (construction shots are often sideways).
+const ORIENTATION_LABELS: Record<number, string> = {
+  1: 'Normal',
+  2: 'Mirrored horizontal',
+  3: 'Rotated 180°',
+  4: 'Mirrored vertical',
+  5: 'Mirrored + 90° CCW',
+  6: 'Rotated 90° CW',
+  7: 'Mirrored + 90° CW',
+  8: 'Rotated 90° CCW',
+};
+function orientationLabel(v: string | number): string {
+  const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+  return ORIENTATION_LABELS[n] ?? String(v);
 }
 
 function Chips({

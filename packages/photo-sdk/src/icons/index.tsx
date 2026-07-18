@@ -55,7 +55,8 @@ export type IconName =
   | 'pip'
   | 'tag'
   | 'document'
-  | 'pin';
+  | 'pin'
+  | 'mic';
 
 export interface IconProps extends SVGProps<SVGSVGElement> {
   name: IconName;
@@ -83,6 +84,13 @@ export function Icon({ name, size = 20, ...rest }: IconProps) {
 }
 
 const paths: Record<IconName, JSX.Element> = {
+  mic: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M6 11a6 6 0 0 0 12 0" />
+      <path d="M12 17v3M9 20.5h6" />
+    </>
+  ),
   library: (
     <>
       <rect x="3" y="6" width="18" height="13" rx="2.5" />

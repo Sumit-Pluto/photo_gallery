@@ -161,6 +161,25 @@ export function Sidebar() {
     ]);
   };
 
+  // Right-click an auto object album → permanently rename its tag (e.g. car → excavator).
+  const objectMenu = (album: Album) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    const label = album.id.slice('sys:obj:'.length);
+    openContextMenu(e.clientX, e.clientY, [
+      {
+        label: 'Rename Tag',
+        icon: 'tag',
+        onClick: () =>
+          promptAlbumName(
+            'Rename Tag',
+            album.name,
+            (name) => api.getState().renameLabel(label, name),
+            { placeholder: 'Tag name' },
+          ),
+      },
+    ]);
+  };
+
   const newAlbum = () =>
     promptAlbumName('New Album', '', (name) => {
       const id = api.getState().createAlbum(name);
@@ -251,6 +270,7 @@ export function Sidebar() {
                   label={a.name}
                   view={a.id as ViewId}
                   indent
+                  onContextMenu={objectMenu(a)}
                 />
               ))
             : null}

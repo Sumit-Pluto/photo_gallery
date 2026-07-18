@@ -213,7 +213,15 @@ async function readExif(file: File): Promise<ExifMeta> {
       out.location = { lat: data.latitude, lng: data.longitude };
     }
     const exif: Record<string, string | number> = {};
-    for (const k of ['Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'FocalLength'] as const) {
+    for (const k of [
+      'Make',
+      'Model',
+      'LensModel',
+      'ISO',
+      'FNumber',
+      'FocalLength',
+      'Orientation',
+    ] as const) {
       const v = data[k];
       if (typeof v === 'string' || typeof v === 'number') exif[k] = v;
     }

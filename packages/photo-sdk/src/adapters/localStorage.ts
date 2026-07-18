@@ -43,10 +43,20 @@ export function createLocalStorageAdapter(key: string = STORAGE_KEY): StorageAda
                   : [],
               }))
           : [];
+        // Keep only string→string entries — never trust persisted data blindly.
+        const labelAliases: Record<string, string> =
+          parsed.labelAliases && typeof parsed.labelAliases === 'object'
+            ? Object.fromEntries(
+                Object.entries(parsed.labelAliases).filter(
+                  ([k, v]) => typeof k === 'string' && typeof v === 'string',
+                ),
+              )
+            : {};
         return {
           media,
           albums,
           people: Array.isArray(parsed.people) ? parsed.people : [],
+          labelAliases,
           version: typeof parsed.version === 'number' ? parsed.version : CURRENT_VERSION,
         };
       } catch {

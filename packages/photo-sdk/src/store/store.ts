@@ -97,6 +97,12 @@ export interface GalleryState {
   media: MediaItem[];
   albums: Album[];
   people: Person[];
+  /**
+   * User's permanent object-tag renames. Key = canonical lowercased detector
+   * label (e.g. "car"), value = the label the user renamed it to ("excavator").
+   * Persisted, applied to future uploads, and resolved wherever labels are grouped.
+   */
+  labelAliases: Record<string, string>;
 
   // Navigation / view
   view: ViewId;
@@ -200,6 +206,12 @@ export interface GalleryState {
   syncObjectAlbums: () => void;
   /** Rename a person/pet group (empty name clears it back to unnamed). */
   renamePerson: (id: PersonId, name: string) => void;
+  /**
+   * Permanently rename a detected object tag (e.g. "car" → "excavator"). Records a
+   * persisted alias, backfills existing items' objectLabels, and rebuilds object
+   * albums so the rename applies to past photos and every future upload.
+   */
+  renameLabel: (from: string, to: string) => void;
 
   // Recently Deleted lock
   setLockPassword: (password: string) => Promise<void>;
@@ -287,10 +299,10 @@ export function createGalleryStore(options: CreateStoreOptions) {
       if (!adapter) return;
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
-        const { media, albums, people } = get();
+        const { media, albums, people, labelAliases } = get();
         // Only persist user-owned albums; smart/system albums are regenerated.
         const userAlbums = albums.filter((a) => !a.system);
-        void adapter!.save({ media, albums: userAlbums, people, version: 1 });
+        void adapter!.save({ media, albums: userAlbums, people, labelAliases, version: 1 });
       }, 400);
     };
 
@@ -302,6 +314,7 @@ export function createGalleryStore(options: CreateStoreOptions) {
       media: options.initialMedia ?? [],
       albums: [...defaultSystemAlbums(now), ...(options.initialAlbums ?? [])],
       people: options.initialPeople ?? [],
+      labelAliases: {},
 
       view: 'library',
       libraryScale: 'all',
@@ -349,6 +362,7 @@ export function createGalleryStore(options: CreateStoreOptions) {
             media: seedEmptyBackend ? seed : loaded.media,
             albums: [...defaultSystemAlbums(ts), ...loaded.albums.filter((al) => !al.system)],
             people: loaded.people ?? [],
+            labelAliases: loaded.labelAliases ?? {},
             ready: true,
             aiAvailable: Boolean(ai),
           });
@@ -880,7 +894,7 @@ export function createGalleryStore(options: CreateStoreOptions) {
         // Replace ONLY the sys:obj:* set; keep default system albums + user albums.
         // Membership stays live via resolveSmartAlbum, so no per-item bookkeeping and
         // no persist() needed (system albums are stripped on save + regenerated on load).
-        const generated = objectSmartAlbums(get().media, Date.now());
+        const generated = objectSmartAlbums(get().media, Date.now(), get().labelAliases);
         set((s) => {
           const others = s.albums.filter((a) => !a.id.startsWith('sys:obj:'));
           // Skip the state write if the label SET is unchanged (avoids render churn).
@@ -897,6 +911,42 @@ export function createGalleryStore(options: CreateStoreOptions) {
         set((s) => ({
           people: s.people.map((p) => (p.id === id ? { ...p, name: trimmed || undefined } : p)),
         }));
+        persist();
+      },
+      renameLabel(from, to) {
+        const key = from.trim().toLowerCase();
+        const value = to.trim().toLowerCase();
+        if (!key) return;
+        set((s) => {
+          const labelAliases: Record<string, string> = { ...s.labelAliases };
+          // Empty / unchanged name clears the alias (renames the tag back to itself).
+          const clearing = !value || value === key;
+          if (clearing) {
+            delete labelAliases[key];
+          } else {
+            labelAliases[key] = value;
+            // Re-point any earlier aliases that resolved to `key` so renaming an
+            // already-renamed tag keeps mapping the original detector label(s).
+            for (const k of Object.keys(labelAliases)) {
+              if (k !== key && labelAliases[k] === key) labelAliases[k] = value;
+            }
+          }
+          // Backfill existing items so past photos regroup under the new label and
+          // stay searchable by it (search reads objectLabels directly).
+          const target = clearing ? key : value;
+          const media = s.media.map((m) => {
+            if (!m.objectLabels.some((l) => l.trim().toLowerCase() === key)) return m;
+            const mapped = [
+              ...new Set(
+                m.objectLabels.map((l) => (l.trim().toLowerCase() === key ? target : l)),
+              ),
+            ];
+            return { ...m, objectLabels: mapped };
+          });
+          return { labelAliases, media };
+        });
+        // Rebuild the sys:obj:* albums so the sidebar/Objects re-title live.
+        get().syncObjectAlbums();
         persist();
       },
 

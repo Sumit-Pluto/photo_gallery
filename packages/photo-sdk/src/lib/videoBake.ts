@@ -174,7 +174,26 @@ export async function bakeVideo(
     const vNode = ac.createMediaElementSource(video);
     const vGain = ac.createGain();
     vGain.gain.value = edits.audio?.muted ? 0 : (edits.audio?.originalVolume ?? 1);
-    vNode.connect(vGain).connect(master);
+    if (edits.audio?.denoise) {
+      // Background-noise reduction: high-pass kills low rumble/hum, low-pass trims
+      // hiss, and a compressor pulls down the noise floor (soft gate). Real-time,
+      // so it works inside the export pipeline (a network round-trip could not).
+      const hp = ac.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 100;
+      const lp = ac.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 12000;
+      const comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -50;
+      comp.knee.value = 20;
+      comp.ratio.value = 12;
+      comp.attack.value = 0.003;
+      comp.release.value = 0.25;
+      vNode.connect(hp).connect(lp).connect(comp).connect(vGain).connect(master);
+    } else {
+      vNode.connect(vGain).connect(master);
+    }
   } catch {
     /* element may have no audio track */
   }
