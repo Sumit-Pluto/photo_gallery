@@ -59,10 +59,14 @@ export function createDemoAIProvider(): AIProvider {
       if ('prompt' in op && typeof op.prompt === 'string') wireOp.prompt = op.prompt;
       if ('factor' in op && typeof op.factor === 'number') wireOp.factor = op.factor;
 
+      // Forward the "edit strength" slider (0..1) so the backend can scale the edit.
+      const params: Record<string, unknown> = {};
+      if ('strength' in op && typeof op.strength === 'number') params.strength = op.strength;
+
       const res = await fetch('/api/ai/edit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ imageBase64: data, mimeType, op: wireOp, maskBase64 }),
+        body: JSON.stringify({ imageBase64: data, mimeType, op: wireOp, maskBase64, params }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: string };

@@ -109,12 +109,23 @@ def handler(event):
         if seed is not None:
             generator = torch.Generator(device=DEVICE).manual_seed(int(seed))
 
+        # The app's "Edit strength" slider arrives as `strength` (0..1). Map it to
+        # image_guidance_scale, which is INVERTED (higher = keep more of the
+        # original = weaker edit): strength 0 -> 1.8 (subtle), 1 -> 1.1 (strong).
+        # An explicit image_guidance_scale, if sent, always wins.
+        img_guidance = IMAGE_GUIDANCE
+        if inp.get("image_guidance_scale") is not None:
+            img_guidance = float(inp["image_guidance_scale"])
+        elif inp.get("strength") is not None:
+            s = max(0.0, min(1.0, float(inp["strength"])))
+            img_guidance = round(1.8 - s * 0.7, 3)
+
         result = _get_pipe()(
             prompt=prompt,
             image=image,
             num_inference_steps=steps,
             guidance_scale=guidance,
-            image_guidance_scale=IMAGE_GUIDANCE,
+            image_guidance_scale=img_guidance,
             negative_prompt=negative,
             generator=generator,
         ).images[0]

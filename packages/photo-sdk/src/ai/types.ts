@@ -37,14 +37,18 @@ export interface AIProvider {
 
 export type GenerativeEditOp =
   | { type: 'remove-background' }
-  | { type: 'replace-sky'; prompt?: string }
-  | { type: 'magic-eraser'; mask: ImageData }
-  | { type: 'generative-fill'; prompt: string; mask: ImageData }
+  | { type: 'replace-sky'; prompt?: string; strength?: number }
+  | { type: 'magic-eraser'; mask: ImageData; strength?: number }
+  | { type: 'generative-fill'; prompt: string; mask: ImageData; strength?: number }
   | { type: 'restore' }
   | { type: 'upscale'; factor: 2 | 4 }
   | { type: 'colorize' }
-  /** Free-form natural-language edit instruction. */
-  | { type: 'prompt'; prompt: string };
+  /**
+   * Free-form natural-language edit instruction. `strength` (0..1) controls how
+   * strongly the edit is applied (subtle → strong); the backend maps it to the
+   * appropriate model knob.
+   */
+  | { type: 'prompt'; prompt: string; strength?: number };
 
 /** Cosine similarity between two equal-length vectors. */
 export function cosineSimilarity(a: number[], b: number[]): number {

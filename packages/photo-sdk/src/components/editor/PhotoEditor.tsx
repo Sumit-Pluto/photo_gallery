@@ -77,6 +77,14 @@ const AI_OPS: Array<{ label: string; op: GenerativeEditOp; icon: 'wand' | 'image
   { label: 'Replace Sky', op: { type: 'replace-sky' }, icon: 'image' },
 ];
 
+/** Ops whose result varies with the "edit strength" slider (the backend maps it per model). */
+const STRENGTH_OPS = new Set<GenerativeEditOp['type']>([
+  'prompt',
+  'replace-sky',
+  'magic-eraser',
+  'generative-fill',
+]);
+
 export function PhotoEditor() {
   const api = useGalleryStoreApi();
   const editorId = useGallery((s) => s.editorId);
@@ -91,6 +99,7 @@ export function PhotoEditor() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiResultUrl, setAiResultUrl] = useState<string | null>(null);
   const [aiPrompt, setAiPrompt] = useState('');
+  const [aiStrength, setAiStrength] = useState(0.5);
   const [annTool, setAnnTool] = useState<AnnotationTool>('rect');
   const [annColor, setAnnColor] = useState<string>('#ff3b30');
   const [cropRatio, setCropRatio] = useState<number | null>(null);
@@ -146,7 +155,11 @@ export function PhotoEditor() {
     setAiError(null);
     try {
       const img = await loadCrossOriginImage(item.src);
-      const blob = await provider.generativeEdit(item, img, op);
+      // Attach the current "edit strength" to ops that support it.
+      const opToRun = STRENGTH_OPS.has(op.type)
+        ? ({ ...op, strength: aiStrength } as GenerativeEditOp)
+        : op;
+      const blob = await provider.generativeEdit(item, img, opToRun);
       aiBlobRef.current = blob;
       setAiResultUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -379,7 +392,7 @@ export function PhotoEditor() {
                   }}
                 >
                   <span className="apg-ai-spinner" style={{ width: 26, height: 26 }} />
-                  <span style={{ fontSize: 13 }}>Generating with Gemini…</span>
+                  <span style={{ fontSize: 13 }}>Generating…</span>
                 </div>
               ) : null}
             </div>
@@ -609,6 +622,35 @@ export function PhotoEditor() {
                     <Icon name={a.icon} size={16} /> {a.label}
                   </button>
                 ))}
+
+                <div className="apg-slider-row" style={{ marginTop: 6 }}>
+                  <div className="apg-slider-row__head">
+                    <span>Edit strength</span>
+                    <span>{Math.round(aiStrength * 100)}%</span>
+                  </div>
+                  <input
+                    className="apg-slider"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={aiStrength}
+                    disabled={aiBusy}
+                    onChange={(e) => setAiStrength(Number(e.target.value))}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: 11,
+                      color: '#9b9ba1',
+                      marginTop: 2,
+                    }}
+                  >
+                    <span>Subtle</span>
+                    <span>Strong</span>
+                  </div>
+                </div>
 
                 <div style={{ marginTop: 6 }}>
                   <input
