@@ -51,6 +51,13 @@ export function InfoPanel() {
             {formatDate(item.takenAt)} · {formatTime(item.takenAt)}
           </div>
 
+          {item.kind === 'image' && !item.analyzedAt ? (
+            <div className="apg-info__analyzing">
+              <span className="apg-info__spinner" aria-hidden />
+              Analyzing image…
+            </div>
+          ) : null}
+
           <Row label="Kind" value={item.kind === 'video' ? 'Video' : 'Photo'} />
           <Row label="Source" value={sourceLabel(item.source)} />
           <Row label="Format" value={`${item.mime} (${ext})`} />

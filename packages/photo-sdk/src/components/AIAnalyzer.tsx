@@ -34,14 +34,16 @@ export function AIAnalyzer({ provider }: { provider: AIProvider }) {
       provider.detectObjects || provider.detectFaces || provider.ocr || provider.embedImage;
     if (!ready || !canDetect || runningRef.current) return;
 
-    // Each capability has its OWN backfill gate (not the shared analyzedAt), so a
-    // capability added in a later session re-processes items analyzed before it
-    // existed: objects key off analyzedAt; faces off `faces === undefined`; OCR
-    // off `ocrText === undefined`.
+    // Analyze each image EXACTLY ONCE: every capability is gated on `!analyzedAt`,
+    // so once an item has been analyzed (and analyzedAt persisted) it is never
+    // re-processed on later reloads — even if an individual result field didn't
+    // round-trip through storage. Fresh uploads (no analyzedAt) run everything.
     const needsObjects = (m: MediaItem) => !!provider.detectObjects && !m.analyzedAt;
-    const needsFaces = (m: MediaItem) => !!provider.detectFaces && m.faces === undefined;
-    const needsOcr = (m: MediaItem) => !!provider.ocr && m.ocrText === undefined;
-    const needsEmbedding = (m: MediaItem) => !!provider.embedImage && m.embedding === undefined;
+    const needsFaces = (m: MediaItem) =>
+      !!provider.detectFaces && !m.analyzedAt && m.faces === undefined;
+    const needsOcr = (m: MediaItem) => !!provider.ocr && !m.analyzedAt && m.ocrText === undefined;
+    const needsEmbedding = (m: MediaItem) =>
+      !!provider.embedImage && !m.analyzedAt && m.embedding === undefined;
     // Collect items still needing analysis, NEWEST FIRST — so a freshly uploaded or
     // captured photo is tagged immediately instead of waiting behind the whole library.
     const collectPending = () =>

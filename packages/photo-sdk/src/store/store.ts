@@ -441,6 +441,9 @@ export function createGalleryStore(options: CreateStoreOptions) {
           // tags objects/faces/OCR/embeddings in the background.
           get().addMedia(items);
           if (albumId) get().addToAlbum(albumId, items.map((i) => i.id));
+          // Surface the just-uploaded photo with its Info panel open, so the user
+          // watches the analysis run + sees its results without hunting for it.
+          set({ infoOpen: true, selection: new Set([items[0]!.id]) });
         }
         return items.map((i) => i.id);
       },
