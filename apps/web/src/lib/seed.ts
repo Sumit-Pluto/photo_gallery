@@ -137,5 +137,8 @@ export function buildSeedPhotos(now = Date.now()): MediaInput[] {
     });
   }
 
-  return items;
+  // TESTING: seed only the demo video(s) — start with an EMPTY photo library so you
+  // can upload 1–2 images and watch them get analyzed. To restore the full demo,
+  // change this back to `return items;`.
+  return items.filter((it) => it.kind === 'video');
 }
