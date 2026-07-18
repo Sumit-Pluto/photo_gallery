@@ -22,6 +22,12 @@ RUN pip install --upgrade pip && \
 COPY workers/upscale/requirements.txt .
 RUN pip install -r requirements.txt
 
+# Robustly fix basicsr's removed torchvision import (the #1 Real-ESRGAN crash).
+# Works whether or not the torch/torchvision pin held — rewrites the bad import.
+RUN F=$(python3 -c 'import basicsr,os;print(os.path.join(os.path.dirname(basicsr.__file__),"data","degradations.py"))') && \
+    sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/' "$F" && \
+    echo "patched basicsr degradations.py"
+
 COPY workers/upscale/handler.py .
 
 CMD ["python3","-u","handler.py"]
