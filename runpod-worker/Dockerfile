@@ -12,11 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Paths are relative to the REPO ROOT (RunPod's build context), so reference the
+# subfolder explicitly.
 # Torch first (CUDA 12.1 build), then the rest.
 RUN pip3 install --no-cache-dir torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
-COPY requirements.txt .
+COPY runpod-worker/requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY handler.py .
+COPY runpod-worker/handler.py .
 
 CMD ["python3", "-u", "handler.py"]
