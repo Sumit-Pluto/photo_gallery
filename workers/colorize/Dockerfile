@@ -15,6 +15,9 @@ WORKDIR /app
 
 COPY workers/colorize/requirements.txt .
 RUN pip3 install --upgrade pip && pip3 install -r requirements.txt
+# Install runpod LAST so modelscope's dependency pins can't break `import runpod`
+# at worker startup (the cause of "worker never becomes ready, no logs").
+RUN pip3 install runpod==1.7.9
 
 COPY workers/colorize/handler.py .
 

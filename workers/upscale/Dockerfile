@@ -12,12 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# FIX for the basicsr functional_tensor bug: install a torch/torchvision pair that
-# still ships torchvision.transforms.functional_tensor (removed in torchvision>=0.16)
-# BEFORE realesrgan/basicsr are installed, so pip does not pull a newer torchvision.
+# Newer CUDA-12.1 torch so the compiled kernels cover current GPUs (fixes
+# "no kernel image is available for execution on the device"). The basicsr
+# functional_tensor import (removed in torchvision>=0.16) is handled by the
+# sed-patch below instead of pinning an old torchvision.
 RUN pip install --upgrade pip && \
-    pip install torch==2.0.1 torchvision==0.15.2 \
-        --index-url https://download.pytorch.org/whl/cu118
+    pip install torch==2.1.2 torchvision==0.16.2 \
+        --index-url https://download.pytorch.org/whl/cu121
 
 COPY workers/upscale/requirements.txt .
 RUN pip install -r requirements.txt
