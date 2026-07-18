@@ -1,0 +1,50 @@
+{
+  "name": "@photo-gallery/sdk",
+  "version": "0.1.0",
+  "description": "A reusable, macOS Photos-style photo gallery for React / Next.js. The shadcn of photo galleries.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./styles.css": "./src/styles/sdk.css"
+  },
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup && node -e \"require('fs').copyFileSync('src/styles/sdk.css','dist/styles.css')\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.10.8",
+    "clsx": "^2.1.1",
+    "exifr": "^7.1.3",
+    "framer-motion": "^11.11.9",
+    "leaflet": "^1.9.4",
+    "nanoid": "^5.0.7",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.12",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.3"
+  }
+}

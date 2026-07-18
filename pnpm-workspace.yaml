@@ -1,0 +1,14 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  core-js: false
+  esbuild: true
+  # onnxruntime-node is the Node backend of transformers.js; the browser uses the
+  # WASM web backend, so this native build is unnecessary.
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: true
+  # tesseract.js postinstall only bundles a local worker; we load worker/core/lang
+  # from the CSP-allow-listed CDN, so its build script is unnecessary.
+  tesseract.js: false

@@ -1,0 +1,328 @@
+{
+  "summary": "Investigate + plan the larger gallery requests in parallel: persistence/refresh audit, env-driven theming, upload pipeline, custom video player, map sheet, missing-features audit",
+  "agentCount": 6,
+  "logs": [],
+  "result": {
+    "plans": [
+      {
+        "area": "Image Loading Race Condition & Persistence Architecture",
+        "findings": "ROOT CAUSE: Three interlocking race conditions cause \"on refresh, sometimes not all images show\":\n\n1. **Seed Data Overwrite (store.ts init)**: Store initializes with 44 seed photos via `initialMedia`, but `init()` runs async. When backend loads, line 306 executes `media: loaded.media.length ? loaded.media : get().media`. If backend returns empty or partial data, it overwrites the seed. No fallback merge exists.\n\n2. **localStorage Caches Stale Snapshots**: When Supabase adapter is used but backend is uninitialized (tables don't exist), `init()` returns null (line 313-314 in store.ts). The app then calls `persist()` immediately (line 314), writing the current in-memory state to localStorage. On next reload, localStorage loads that stale snapshot synchronously, defeating the seed entirely. localStorage wins because it's sync; Supabase load is async.\n\n3. **Race Between Seed Init and Backend Load**: PhotoGallery.tsx (lines 91-99) creates the store with seed photos in `initialMedia`. GalleryRoot (line 141) calls `init(adapter, ai)` async. If Supabase returns in 200ms while localStorage is persisting in parallel, both race to set state. The persist() function (store.ts 252-257) debounces saves every 400ms, creating windows where stale localStorage state can be written before a fresh backend load completes.\n\n4. **No Seeding for Fresh Backend**: supabaseAdapter.ts (lines 39-64) returns only what exists in Postgres. If backend is empty (fresh user, failed migration), there's no fallback to seed. App shows blank gallery instead of demo content.\n\nEVIDENCE:\n- store.ts lines 306, 314: conditional media load with no merge strategy\n- store.ts lines 249-257: persist() debounces at 400ms, allowing race windows\n- localStorage.ts lines 20-24: synchronous load on component mount\n- GalleryClient.tsx line 43: seed passed as initialMedia but has no protective logic\n- supabaseAdapter.ts line 46: returns null when tables don't exist, no fallback\n\nARCHITECTURAL ISSUE: Storage adapter pattern allows multiple sources (seed, localStorage, Supabase) to race. Current code treats localStorage and backend as equals, but they should be hierarchical (backend=source-of-truth, localStorage=transient cache for client settings only).\n",
+        "plan": "BACKEND-ONLY PERSISTENCE: Restructure to make Supabase (or any backend adapter) the single source of truth for media/albums/people, while localStorage holds only tiny client-only settings (lock hash, shares).\n\nIMPLEMENTATION:\n1. **Remove localStorage dependency for media/albums/people** in store.ts:\n   - Move LOCK_KEY and SHARES_KEY out of the `persist()` function (keep them client-local)\n   - Modify `persist()` to only save via the backend adapter, never to localStorage\n   - Remove the localStorage fallback logic that writes stale state\n\n2. **Fix init() to merge seed with backend data** in store.ts:\n   - When adapter.load() returns null (backend uninitialized), don't just keep seed in memory\n   - When adapter.load() returns partial data, merge with seed (backend additions + seed defaults)\n   - Call persist() to write the merged state back to backend for future loads\n   - This seeds the backend on first initialization\n\n3. **Create a separate client-settings adapter** in packages/photo-sdk/src/adapters/clientSettings.ts:\n   - Handle only `lock` (hash) and `shares` (ShareRecord[])\n   - Uses localStorage as before (these are device-local, not synced to backend)\n   - Loaded/saved independently from the main adapter\n\n4. **Update store.ts init()** to:\n   - Load main adapter (media/albums/people) from backend\n   - Load client-settings adapter separately for lock+shares\n   - Merge any seed data with backend on first run\n   - Only use backend for media/albums/people persist operations\n\n5. **Update GalleryClient.tsx**:\n   - Still pass seed as initialMedia (acts as fallback only)\n   - init() logic handles merge with backend if backend is empty or partial\n   - No special seed-handling logic needed in the component\n\n6. **Add seed-on-empty logic to supabaseAdapter.ts** (optional but recommended):\n   - Add an optional `seedData?: PersistedState` parameter to createSupabaseAdapter\n   - On first successful load that returns empty data, insert seed and return it\n   - Prevents blank gallery on fresh backends\n\nFILES TO CHANGE:\n- packages/photo-sdk/src/store/store.ts (init, persist, lock/shares handling)\n- packages/photo-sdk/src/adapters/localStorage.ts (remove media/albums/people, keep only client-settings reference)\n- packages/photo-sdk/src/adapters/clientSettings.ts (NEW - tiny adapter for lock+shares only)\n- apps/web/src/lib/adapters/supabaseAdapter.ts (optional: add seedData parameter + seed-on-empty logic)",
+        "files": [
+          {
+            "path": "packages/photo-sdk/src/store/store.ts",
+            "change": "CRITICAL: Refactor init() and persist() to use backend as single source of truth. (1) Split persist() into two: persistBackend() for media/albums/people (uses adapter), and persistClientSettings() for lock/shares (uses localStorage). (2) Fix init() to merge loaded backend data with initialMedia seed if backend is empty or partial, then call persistBackend() to write merged state. (3) Remove the ternary fallback on line 306 that discards partial backend data. (4) Ensure persist() calls only trigger persistBackend() (async to adapter), never write media/albums/people to localStorage. Keep lock/shares in client-only localStorage. Full file changes required at lines 249-322 (init and persist functions)."
+          },
+          {
+            "path": "packages/photo-sdk/src/adapters/clientSettings.ts",
+            "change": "NEW FILE: Minimal adapter for client-only settings (lock hash + shares). Exports createClientSettingsAdapter() that uses localStorage only, similar to localStorage.ts but scoped to { lock: { hash: string | null }, shares: ShareRecord[] }. Used in parallel with main backend adapter for device-local state."
+          },
+          {
+            "path": "packages/photo-sdk/src/adapters/types.ts",
+            "change": "OPTIONAL: Add ClientSettingsAdapter interface if creating separate adapter, or reuse StorageAdapter pattern. Keep existing StorageAdapter interface unchanged."
+          },
+          {
+            "path": "apps/web/src/lib/adapters/supabaseAdapter.ts",
+            "change": "ENHANCEMENT (optional but recommended): Add optional seedData?: PersistedState parameter to createSupabaseAdapter(). In load(), if the backend returns no data (empty gallery_media), insert seedData and return it, so fresh backends show demo content. Prevents blank app on first user load. Around lines 18, 39-64."
+          },
+          {
+            "path": "apps/web/src/components/GalleryClient.tsx",
+            "change": "MINOR: Pass seed to PhotoGallery as before. No logic changes needed here—the store init() merge logic handles fallback to seed. seed persists as initialMedia for use in init()."
+          }
+        ]
+      },
+      {
+        "area": "ENV-driven customization system for PhotoGallery SDK",
+        "findings": "\nCurrent state analysis:\n\n**PhotoGallery Component** (packages/photo-sdk/src/components/PhotoGallery.tsx):\n- Accepts props: photos, albums, adapter, ai, theme, accentColor, borderRadius, features, showWindowChrome, title\n- GalleryConfig in store includes: features, accentColor, borderRadius, showWindowChrome, title\n- GalleryFeatures flags: editor, camera, ai, map, import, export, sharing (all boolean)\n- Currently only accentColor and borderRadius are theme-related; CSS vars are computed inline via rootStyle\n- Inline styles set --apg-accent, --apg-radius, --apg-radius-sm/lg/xl\n\n**GalleryClient Demo** (apps/web/src/components/GalleryClient.tsx):\n- Hardcodes features (all true), theme (system), accentColor, and adapter\n- Reads NEXT_PUBLIC_SUPABASE_* for backend but nothing for theme customization\n- No env vars for styling or feature flags currently\n\n**CSS Design System** (packages/photo-sdk/src/styles/sdk.css):\n- Uses CSS custom properties --apg-* for colors, shadows, spacing, radius\n- Light theme (default): --apg-bg, --apg-bg-content, --apg-bg-elevated, --apg-sidebar-bg (with rgba backdrop)\n- Dark theme [data-theme='dark']: darker backgrounds + adjusted text colors\n- Semi-dark theme: dark sidebar + light content area\n- All shadows, separators, text colors, hovers have CSS vars\n- Supports gradient usage (e.g., .apg-pinned-card uses linear-gradient)\n- No opacity vars defined; opacity is inline in rgba() calls\n\n**Root cause**: Config is component-prop-driven only; no bridge to read NEXT_PUBLIC_* env vars in the demo; CSS customization is accent/radius only; no theme background, sidebar, gradient, or opacity controls via env.\n\n**Desired end state**: Developers should set NEXT_PUBLIC_APG_* env vars (e.g., NEXT_PUBLIC_APG_EDITOR=true, NEXT_PUBLIC_APG_BG_LIGHT=#ffffff, NEXT_PUBLIC_APG_SIDEBAR_BG_DARK=rgba(...)) and have them automatically apply to the gallery without prop drilling.\n",
+        "plan": "\n**Phase 1: Extend GalleryConfig with theme tokens**\n1. Create new interface `ThemeTokens` in packages/photo-sdk/src/store/store.ts:\n   - bgLight, bgDark (main backgrounds)\n   - bgContentLight, bgContentDark (content area overlays)\n   - bgElevatedLight, bgElevatedDark (raised surfaces like cards)\n   - sidebarBgLight, sidebarBgDark (sidebar glass backdrop)\n   - textLight, textDark, textSecondaryLight, textSecondaryDark\n   - sidebarBorderRadiusLight, sidebarBorderRadiusDark (border-radius on sidebar)\n   - accentOpacity (0-1 for accent transparency)\n   - gradientBgLight, gradientBgDark (full gradient strings for pinned cards/hero)\n   - Optional: separatorLight, separatorDark, hoverLight, hoverDark, shadowLight, shadowDark\n\n2. Extend GalleryConfig to include optional `themeTokens?: Partial<ThemeTokens>`\n\n3. In PhotoGallery.tsx GalleryRoot component, compute merged CSS vars object:\n   - Start with defaults from theme (light/dark/semi-dark)\n   - Layer on themeTokens overrides\n   - Set as inline style on .apg root element (spread into rootStyle)\n\n**Phase 2: Create env-to-config helper in demo**\n1. Create new file: apps/web/src/lib/galleryConfig.ts\n   - Export `getGalleryConfigFromEnv()` function\n   - Read all NEXT_PUBLIC_APG_* vars via process.env\n   - Parse boolean features (NEXT_PUBLIC_APG_EDITOR etc.)\n   - Parse color strings for theme tokens\n   - Parse opacity as float\n   - Parse gradient strings as-is\n   - Return merged GalleryConfig ready for <PhotoGallery />\n\n2. Update apps/web/src/components/GalleryClient.tsx:\n   - Call getGalleryConfigFromEnv() to build config\n   - Pass config + themeTokens to <PhotoGallery />\n   - Keep hardcoded defaults as fallbacks\n\n**Phase 3: Update CSS to accept theme token vars**\n1. Modify packages/photo-sdk/src/styles/sdk.css:\n   - Keep existing --apg-* vars as-is (for backward compat)\n   - Add new optional theme token vars (--apg-theme-bg-light, etc.)\n   - Use CSS cascading: if --apg-theme-bg-light is set, it overrides --apg-bg in light mode\n   - Use @supports or fallback pattern for gradients vs static colors\n\n**Phase 4: Documentation**\n1. Create docs/ENV.md:\n   - Full alphabetical list of NEXT_PUBLIC_APG_* vars\n   - Categories: Features, Colors (light/dark), Sidebar, Opacity, Gradients\n   - Example .env.local file\n   - Defaults for each\n   - Value formats (hex, rgb(), rgba(), gradients)\n   - Test examples\n\n2. Update README.md:\n   - Link to docs/ENV.md\n   - Add \"Customization via environment\" section\n   - Show quick example\n\n**Phase 5: Type safety**\n1. Create types/env.ts:\n   - Export EnvConfig type with all NEXT_PUBLIC_APG_* keys\n   - Build type-safe accessors for env reads\n",
+        "files": [
+          {
+            "path": "packages/photo-sdk/src/store/store.ts",
+            "change": "Extend GalleryConfig with optional ThemeTokens interface. Add new ThemeTokens type with bgLight, bgDark, bgContentLight, bgContentDark, bgElevatedLight, bgElevatedDark, sidebarBgLight, sidebarBgDark, textLight, textDark, textSecondaryLight, textSecondaryDark, accentOpacity, sidebarBorderRadiusLight, sidebarBorderRadiusDark, gradientBgLight, gradientBgDark, separatorLight, separatorDark, hoverLight, hoverDark. Update GalleryConfig interface to include themeTokens?: Partial<ThemeTokens>. All colors support hex, rgb(), rgba(), and gradient strings. Keep backward compat with accentColor and borderRadius."
+          },
+          {
+            "path": "packages/photo-sdk/src/components/PhotoGallery.tsx",
+            "change": "Update GalleryRoot component to merge themeTokens with resolved theme and compute final CSS vars. In the rootStyle object, add computed vars like --apg-theme-bg-light, --apg-theme-bg-dark, --apg-theme-sidebar-bg-light, --apg-theme-sidebar-bg-dark, --apg-theme-accent-opacity, --apg-theme-gradient-light, --apg-theme-gradient-dark, etc. These cascade into .apg element and are ready for CSS to consume. Keep all existing radius/accent vars for backward compat."
+          },
+          {
+            "path": "packages/photo-sdk/src/styles/sdk.css",
+            "change": "Add optional theme token CSS var handlers. In .apg light theme block, add fallback patterns: --apg-bg: var(--apg-theme-bg-light, #ffffff); for each customizable color. Similarly for [data-theme='dark']. For gradients, use .apg-pinned-card background: var(--apg-theme-gradient-light, linear-gradient(...)); Support var(--apg-theme-accent-opacity) in rgba values. Keep all existing --apg-* vars as-is for backward compat. No breaking changes."
+          },
+          {
+            "path": "apps/web/src/lib/galleryConfig.ts",
+            "change": "Create new helper file. Export getGalleryConfigFromEnv() function that reads process.env.NEXT_PUBLIC_APG_* vars and builds config. Parse features: NEXT_PUBLIC_APG_EDITOR, NEXT_PUBLIC_APG_CAMERA, NEXT_PUBLIC_APG_AI, NEXT_PUBLIC_APG_MAP, NEXT_PUBLIC_APG_IMPORT, NEXT_PUBLIC_APG_EXPORT, NEXT_PUBLIC_APG_SHARING (parse 'true'/'false' strings). Parse theme tokens: NEXT_PUBLIC_APG_BG_LIGHT, NEXT_PUBLIC_APG_BG_DARK, NEXT_PUBLIC_APG_BG_CONTENT_LIGHT, etc. Parse NEXT_PUBLIC_APG_ACCENT, NEXT_PUBLIC_APG_BORDER_RADIUS, NEXT_PUBLIC_APG_ACCENT_OPACITY. Return merged GalleryConfig with themeTokens. All vars optional with sensible defaults."
+          },
+          {
+            "path": "apps/web/src/components/GalleryClient.tsx",
+            "change": "Update to use getGalleryConfigFromEnv(). Import the helper and call it before rendering PhotoGallery. Merge the returned config with hardcoded defaults. Pass both config features, accentColor, borderRadius and the themeTokens object to PhotoGallery. Keep adapter and ai logic unchanged. Fallback logic: env overrides hardcoded defaults, but missing env vars use hardcoded values."
+          },
+          {
+            "path": "docs/ENV.md",
+            "change": "Create comprehensive environment variable documentation. List all NEXT_PUBLIC_APG_* vars in categories: Features (editor, camera, ai, map, import, export, sharing), Color Theme (bg-light, bg-dark, bg-content-*, sidebar-bg-*, text-*, accent-opacity, sidebar-border-radius-*), Gradients (gradient-bg-light, gradient-bg-dark). For each var: name, type (boolean/color/string/number), default value, example. Include full example .env.local showing all vars. Show light/dark/semi-dark fallback logic. Explain CSS var mapping."
+          },
+          {
+            "path": ".env.example",
+            "change": "Update root .env.example to show all NEXT_PUBLIC_APG_* vars for feature flags and theme customization. Keep Supabase and Gemini sections. Add new section '# Photo Gallery SDK Customization' with commented examples of all env vars with defaults. Format: NEXT_PUBLIC_APG_EDITOR=true, NEXT_PUBLIC_APG_BG_LIGHT=#ffffff, NEXT_PUBLIC_APG_SIDEBAR_BG_DARK=rgba(22,22,24,0.72), etc."
+          },
+          {
+            "path": "packages/photo-sdk/src/types/index.ts",
+            "change": "Check if exists; add export for ThemeTokens type from store.ts so consumers can reference it."
+          },
+          {
+            "path": "README.md",
+            "change": "Add section 'Customization via Environment Variables' before 'Using the SDK in your own app'. Show quick example of setting NEXT_PUBLIC_APG_EDITOR=false and NEXT_PUBLIC_APG_BG_DARK=#1a1a1a. Link to docs/ENV.md for full list. Mention backward compat with accentColor/borderRadius props."
+          }
+        ]
+      },
+      {
+        "area": "Upload Flow Design",
+        "findings": "CURRENT STATE:\nThe SDK already has distributed upload capability via TopToolbar.tsx (line 188-198) and LibraryView.tsx (line 51-58), but no unified modal. Both use raw file input elements with accept=\"image/*,video/*\" and call importFiles(files). Processing happens in store.ts importFiles (line 342-363) which uses mediaFromFile from lib/media.ts to validate, read metadata, and optionally upload via adapter.putBlob. AIAnalyzer.tsx automatically processes newly-added media in the background (objects, faces, OCR, embeddings). Source classification (screenshot detection) happens via classify.ts automatically on import.\n\nROOT CAUSES / GAPS:\n1. No dedicated upload modal — file picker is hidden inline in two places\n2. Album selection not exposed at upload time — files are auto-filed only by source (Camera/Screenshots albums)\n3. Drag-drop is only in LibraryView, not available from other views\n4. No visual feedback about what file types are accepted\n5. No album picker defaulting to current album\n6. Processing happens transparently (no UI about which stage is running)\n\nACTUAL FILE LOCATIONS:\n- TopToolbar.tsx: d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\TopToolbar.tsx (lines 78-95, 188-198)\n- LibraryView.tsx: d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\views\\LibraryView.tsx (lines 51-64, 102-156)\n- store.ts importFiles: d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\store\\store.ts (lines 342-363)\n- mediaFromFile/isAcceptedMediaFile: d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\lib\\media.ts (lines 127-172)\n- AIAnalyzer.tsx: d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\AIAnalyzer.tsx (lines 24-146)\n- modals.tsx (modal patterns): d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\modals.tsx (lines 1-389)\n- Modal.tsx (host): d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\Modal.tsx (lines 1-56)\n- classify.ts (source detection): d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\lib\\classify.ts (lines 1-78)\n- selectors.ts (albumById): d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\store\\selectors.ts (lines 16-18, 104-106)\n- CSS: d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\styles\\sdk.css (lines 975-1014)",
+        "plan": "UPLOAD MODAL ARCHITECTURE:\n\n1. NEW FILE: UploadModal.tsx in packages/photo-sdk/src/components/\n   - Component signature: function UploadModal({ defaultAlbumId?: AlbumId }): ReactNode\n   - State: (files: File[], selectedAlbumId: AlbumId | null, uploading: boolean)\n   - Three zones:\n     a) Browse button (fileRef input with accept=\"image/*,video/*\")\n     b) Drag-drop zone with visual feedback (dashed outline on hover)\n     c) Album picker dropdown (defaulting to defaultAlbumId, showing user/folder albums)\n   - File validation inline: filter out non-image/video before preview\n   - Submit: passes (files, albumId?) to store.importFiles, then optionally addToAlbum\n   - Uses apg-modal CSS (max-width 380px, centered via backdrop)\n\n2. MODIFIED: TopToolbar.tsx\n   - Replace fileRef.current?.click() with openUploadModal() helper\n   - Extract current album id from view state (view.startsWith('album:') ? view.slice(6) : null)\n   - Pass defaultAlbumId to modal\n\n3. MODIFIED: LibraryView.tsx\n   - Expose Welcome component's onImport callback to openUploadModal instead of fileRef.current?.click()\n   - Keep drag-drop handler in LibraryView (it's a view-wide feature)\n\n4. NEW EXPORT: modals.tsx\n   - Add openUploadModal(defaultAlbumId?: AlbumId) function\n   - Follows pattern of openAlbumPickerModal, openSecuritySettings, etc.\n\n5. EXISTING FLOW (no changes needed):\n   - store.ts importFiles: already validates via mediaFromFile → isAcceptedMediaFile\n   - Already calls adapter.putBlob if available\n   - Already prepends items to media array\n   - store.addMedia: already auto-files by source (Screenshots album)\n   - AIAnalyzer: already processes async in background (objects, faces, OCR, embedding)\n   - Source classification: already happens in mediaFromFile via classify.ts\n   - Screenshots auto-album: already in store.addMedia (line 329-338)\n\nINTEGRATION POINTS:\n- importFiles(files) signature stays same (no albumId param) — keep source-based auto-filing intact\n- IF user picks album in modal, call addToAlbum(albumId, newIds) AFTER importFiles completes\n- Processing is invisible (AIAnalyzer handles it; user sees aiStatus.running in toolbar)",
+        "files": [
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\UploadModal.tsx",
+            "change": "NEW FILE - Upload modal with browse button, drag-drop zone, and album picker. Validates file types inline, shows preview of selected files, lets user choose album before uploading. On submit, calls importFiles(files) then optionally addToAlbum(albumId, newIds). Exports helper openUploadModal() in modals.tsx."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\TopToolbar.tsx",
+            "change": "MODIFY: Replace fileRef + onImportFiles with openUploadModal() call (line 189-195). Extract current albumId from view state to pass as defaultAlbumId. Remove fileRef, onImportFiles function. Update import to include openUploadModal from modals."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\views\\LibraryView.tsx",
+            "change": "MODIFY: Replace Welcome onImport={() => fileRef.current?.click()} with onImport={() => openUploadModal()} (line 12, 69). Remove fileRef logic (lines 51, 54-58, 148-155). Keep drag-drop handler unchanged (lines 60-64, 102-156). Update import to include openUploadModal from modals."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\modals.tsx",
+            "change": "MODIFY: Add export for openUploadModal(defaultAlbumId?: AlbumId) function at end of file. This opens the UploadModal via openModal() helper (following pattern of openSecuritySettings, etc.)."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\lib\\media.ts",
+            "change": "NO CHANGE - isAcceptedMediaFile(file) already validates image/video MIME types and file extensions (line 127-129). mediaFromFile already handles both images and videos (line 132-172). Already used by importFiles."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\store\\store.ts",
+            "change": "NO CHANGE - importFiles(files) already validates via mediaFromFile, uploads via adapter.putBlob if available, calls addMedia which auto-files by source (Screenshots album at line 328-338). Behavior unchanged."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\components\\AIAnalyzer.tsx",
+            "change": "NO CHANGE - Already processes newly-added media in background: objects/objectLabels, faces (clustered into People), OCR text, embeddings. Triggered by mediaCount change. Runs with CONCURRENCY=2, updates aiStatus in toolbar (line 120, 115)."
+          },
+          {
+            "path": "d:\\advance-photo-gallery-web-sdk\\packages\\photo-sdk\\src\\lib\\classify.ts",
+            "change": "NO CHANGE - classifyMediaSource already auto-detects Screenshots (line 40, 47, 52-54) and returns MediaSource. Screenshots album creation happens in store.addMedia (line 335-336)."
+          }
+        ]
+      },
+      {
+        "area": "Custom macOS-style Video Player for Lightbox",
+        "findings": "\nCURRENT STATE:\n- Lightbox.tsx (line 147-148) renders videos using bare native `<video controls autoPlay playsInline>` element\n- No custom video controls exist; native browser controls are used\n- Lightbox has a fixed top bar with metadata (title, date, location) and action buttons (info, favorite, edit, download, delete)\n- Edit button only shows for images (line 95: `item.kind === 'image'`)\n- Download button (share icon) appears for both images and videos when `features.export` is true\n- Lightbox stage is centered flex container with max-width/height constraints, padding 10px\n- Videos inherit `.apg-lightbox__stage video` styling: max-width/height 100%, object-fit contain, border-radius 4px\n- Navigation uses prev/next chevron buttons at 50% vertical position (left: 18px, right: 18px)\n- Keyboard shortcuts: Escape (close), ArrowLeft (prev), ArrowRight (next) all handled at Lightbox level\n- SDK has no heavy ML deps currently; ships scoped `.apg-` CSS with light + dark theme support\n- Icon system: 20 available icons (play, heart, share, trash, info, chevron-left/right, etc.) in src/icons/index.tsx\n- All components support light/dark/semi-dark themes via CSS custom properties\n- CSS has glass-morphism patterns for menus (backdrop-filter blur 34px)\n- VideoEditor.tsx shows editor supports video playback with custom timeline scrubber\n\nDESIGN PATTERN OBSERVATIONS:\n- macOS-style: frosted glass backgrounds (blur + translucent fill), rounded corners, smooth transitions\n- All interactive elements use apg-iconbtn (30x30 with 8px border-radius, hover/active states)\n- Touch-friendly: 44x44 hit targets on coarse-pointer devices (@media pointer: coarse)\n- Darkbox overlay: rgba(0, 0, 0, 0.97) with backdrop-filter blur(8px)\n- Glass overlays: rgba (light/dark appropriate) + backdrop-filter blur(24-34px)\n- Keyboard accessibility: all focus-visible elements get 2px accent outline with 2px offset\n\nBUTTON PLACEMENT IN TOP BAR (current, line 62-126):\n[Close] [Title/Date/Location] [spacer] [Info] [Favorite] [Edit (img only)] [Download] [Delete]\n\nTo support Edit + Download for videos, buttons must be conditional or always present.\n",
+        "plan": "\nCOMPONENT ARCHITECTURE:\n\n1. NEW FILE: `packages/photo-sdk/src/components/VideoPlayer.tsx`\n   - Main component wrapping a video ref\n   - Props: src, poster, duration (optional), onLoadedMetadata, className\n   - Internal state: playing, currentTime, bufferedRanges, volume, muted, fullscreen, pip\n   - Auto-hide controls: show on mousemove/touchstart, fade after 2s idle (only in fullscreen)\n   - Render structure:\n     - Hidden native <video> element (ref passed to controls)\n     - Play/pause video layer with center play icon (click to toggle)\n     - Glass transport overlay (bottom): play/pause, scrubber, time, volume, mute, fullscreen, PiP\n     - Keyboard handlers (Space=play/pause, ArrowLeft/Right=seek ±5s, F=fullscreen, M=mute, L=PiP)\n\n2. NEW FILE: `packages/photo-sdk/src/components/VideoTransport.tsx`\n   - Stateless control bar component\n   - Props: videoRef, playing, onPlayPause, currentTime, duration, bufferedRanges, volume, onVolumeChange, muted, onMuteToggle, onSeek, onFullscreen, onPip\n   - Layout (left to right):\n     [Play/Pause] [Current Time MM:SS] [Scrubber with buffered/played progress] [Total Time MM:SS] [Volume slider] [Mute toggle] [PiP] [Fullscreen]\n   - Scrubber: double-track design showing buffered (light gray) and played (accent blue) ranges\n   - Smooth seek on mouse/touch drag\n   - Keyboard: handle Space/Escape within the bar for accessibility\n\n3. MODIFIED: `packages/photo-sdk/src/components/Lightbox.tsx`\n   - Import VideoPlayer component\n   - Replace native <video> with <VideoPlayer> wrapper (line 147-148)\n   - Update top bar buttons (line 95-114):\n     * Edit button: show for images OR videos (if features.videoEditor)\n     * Download button: already present, no change needed\n     * Position: [Close] [Title] [spacer] [Info] [Favorite] [Edit] [Download] [Delete]\n\n4. NEW CSS: Add to `packages/photo-sdk/src/styles/sdk.css` (~60 lines)\n   - `.apg-video-player`: container, position relative, width/height 100%\n   - `.apg-video-player__video`: native video element (display: none for audio-only, or display: block)\n   - `.apg-video-player__overlay`: position absolute inset 0, background: radial-gradient (dark at edges for play icon)\n   - `.apg-video-player__play-overlay`: centered play icon (48px), opacity 0 on hover, pointer-events none\n   - `.apg-transport`: position absolute bottom 0 inset-x 0, height 60px, background glass (rgba + blur)\n     * border-top: hairline separator\n     * padding: 10px 12px\n     * display: flex, align-items: center, gap: 10px\n     * z-index: 10\n   - `.apg-transport--hidden`: opacity: 0, pointer-events: none, transition: opacity 0.3s ease\n   - `.apg-transport__time`: font-size 11px, color text-secondary, min-width: 40px, text-align center, monospace\n   - `.apg-transport__scrubber-wrap`: flex 1, position relative, height 20px, display flex align-items center\n   - `.apg-transport__scrubber`: width 100%, height 6px, background rgba (light fill), border-radius 3px, position relative\n   - `.apg-transport__scrubber-track`: position absolute, height 6px, background accent, border-radius 3px, left 0\n   - `.apg-transport__scrubber-buffered`: position absolute, height 4px, background rgba(accent, 0.3), border-radius 3px\n   - `.apg-transport__volume-slider`: width 80px, accent-color\n\nBUTTON ADDITIONS IN LIGHTBOX TOP BAR:\n\nCurrent structure (Lightbox.tsx lines 62-126):\n```\n<div className=\"apg-lightbox__bar\">\n  [Close button] [Title/Date/Location] [spacer] [Info] [Favorite] [Edit (img)] [Download] [Delete]\n</div>\n```\n\nModified structure (NEW):\n```\n<div className=\"apg-lightbox__bar\">\n  [Close button] [Title/Date/Location] [spacer] [Info] [Favorite] [Edit (img OR vid)] [Download] [Delete]\n</div>\n```\n\nChange line 95 from:\n```tsx\n{features.editor && item.kind === 'image' ? (\n```\n\nTo:\n```tsx\n{features.editor && (item.kind === 'image' || item.kind === 'video') ? (\n```\n\nAnd update the onClick handler to handle both image (opens editor) and video (opens VideoEditor if available, else opens VideoPlayer inline edit if future feature).\n\nKEYBOARD SHORTCUTS (VideoPlayer):\n- Space: play/pause\n- ArrowLeft: seek -5s\n- ArrowRight: seek +5s\n- F: fullscreen (only if supported)\n- M: mute/unmute\n- L: PiP toggle (only if supported)\n- K: play/pause (video player standard)\n- <: slow down playback (0.75x)\n- >: speed up playback (1.25x)\n- Escape: exit fullscreen (or close video)\n\nAUTO-HIDE BEHAVIOR:\n- Transport shows by default\n- On fullscreen: auto-hide after 2s idle\n- Show on: mousemove, keypress, touchstart\n- Fade: opacity transition 0.3s\n- No hiding when paused (always visible controls)\n\nMACOS STYLING DETAILS:\n- Glass transport background: `rgba(0, 0, 0, 0.5)` (light) or `rgba(28, 28, 30, 0.7)` (dark) with `backdrop-filter: blur(20px)`\n- Scrubber track: accent color with smooth transition\n- Time labels: monospace font (SF Mono or ui-monospace), small (11px), secondary color\n- Icons: all use existing Icon component, white text in dark context\n- Hover states: buttons get `rgba(255, 255, 255, 0.12)` background\n- Active states: buttons get accent color background\n\nFULLSCREEN & PIP:\n- Use native fullscreen API (element.requestFullscreen())\n- Handle fullscreenchange event to update UI state\n- PiP: use document.pictureInPictureElement API\n- PiP button disabled if browser doesn't support it\n- Auto-close other PiP if starting new one\n",
+        "files": [
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/components/VideoPlayer.tsx",
+            "change": "CREATE: New custom macOS-style video player component. Wraps HTMLVideoElement with glass-morphism controls, auto-hiding transport, keyboard shortcuts, fullscreen, PiP, volume/mute controls, and buffered/played progress scrubber. ~280 lines."
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/components/VideoTransport.tsx",
+            "change": "CREATE: Stateless glass transport control bar component. Renders play/pause, time display, scrubber with buffered ranges, volume slider, mute, PiP, and fullscreen buttons. ~200 lines."
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/components/Lightbox.tsx",
+            "change": "MODIFY: Replace native <video> element (line 147-148) with <VideoPlayer> wrapper. Update Edit button condition (line 95) to show for both images AND videos (add `|| item.kind === 'video'`). Buttons in top bar: [Close][Title/Date][spacer][Info][Favorite][Edit][Download][Delete]."
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/styles/sdk.css",
+            "change": "ADD: ~80 lines of CSS for VideoPlayer and VideoTransport components. Scoped under `.apg-video-player` and `.apg-transport`. Includes glass morphism (blur, frosted fill), auto-hide transitions, scrubber track styling, time label monospace fonts, touch-friendly (pointer: coarse) button sizing, dark/light/semi-dark theme variants."
+          }
+        ]
+      },
+      {
+        "area": "Map View Pin Thumbnails + Bottom Sheet Drag-to-Resize",
+        "findings": "**Current State:**\n\n**MapView.tsx** (lines 13–254):\n- Renders a Leaflet map with location clusters as pins\n- Each pin displays a thumbnail image (`apg-pin__img`) with optional count badge\n- Pin markup: `<span class=\"apg-pin\"><img class=\"apg-pin__img\" .../><span class=\"apg-pin__count\"></span></span>` (lines 126–128)\n- Clicking a pin opens a bottom sheet with photos grouped by day (lines 226–252)\n- Sheet is static fullscreen-fixed at `max-height: 62%` with no resize capability\n\n**sdk.css** (relevant sections):\n- `.apg-pin` (lines 697–730): 48×48px pin with 12px border-radius, white border, shadow. Pin tail points to map coordinates\n- `.apg-pin__img` (lines 711–717): uses `object-fit: cover` but image sits in fixed 48×48 square, so currently works. HOWEVER: if images are non-square (portrait/landscape), the fixed dimensions + cover may cause overflow visually within the pin's design intent\n- `.apg-pin__count` (lines 731–746): small badge with count, bottom-left of pin\n- `.apg-map__sheet` (lines 749–768): positioned absolutely, bottom-anchored, no resize handle, no drag interaction\n- `.apg-map__sheet-head` (lines 769–776): header with location name + close button\n- `.apg-map__sheet-body` (lines 777): flex: 1, scrolls vertically\n\n**Root Cause of Issues:**\n1. **Non-square pin thumbnails**: While `object-fit: cover` is applied, the pin itself is square (48×48). The issue is that the current CSS doesn't explicitly ensure the image is *contained* visually without distortion — the cover fit works but doesn't guarantee the best UX for all aspect ratios. The real improvement is adding explicit square container semantics.\n2. **No hover tooltip on pins**: Currently only a Leaflet tooltip for place name (line 148), not a small image preview\n3. **Sheet is not draggable/resizable**: No drag handle, no pointer-events listener, no height state management in React. Sheet is bottom-left anchored, not bottom-RIGHT as requested.\n\n**Required Changes:**\n1. **CSS for pin thumbnails**: Ensure fixed square aspect ratio with clear `object-fit: cover` on a proper square container. Add hover state showing a small image popup\n2. **CSS + HTML for sheet drag handle**: Add a visible drag handle at the top of the sheet, styled to indicate it's draggable\n3. **React state + pointer events for sheet resize**: Track sheet height, listen to pointer events on the handle, calculate drag delta, update height (clamped 50% → 100%)\n4. **Reposition sheet to bottom-RIGHT**: Move from `left: 0; right: 0;` to `right: 0; width: auto; max-width: 50vw;` or similar, anchored at half-height initially",
+        "plan": "**Concrete Implementation Plan:**\n\n**1. Pin Thumbnail Square Crop (CSS only)**\n   - File: `packages/photo-sdk/src/styles/sdk.css` lines 697–717\n   - Wrap `.apg-pin__img` in a strict square container or clarify the pin itself as the container\n   - Add `aspect-ratio: 1 / 1;` to `.apg-pin` (already square at 48×48 but make it explicit)\n   - Keep `object-fit: cover` on `.apg-pin__img` to fill square without distortion\n   - **Change**: Explicitly set `overflow: hidden;` on `.apg-pin` to clip any overflow from the image, and ensure no margin/padding in `.apg-pin__img`\n\n**2. Pin Hover Tooltip with Image Preview (CSS + markup)**\n   - File: `packages/photo-sdk/src/styles/sdk.css` + `MapView.tsx` line 133–144\n   - Add CSS class `.apg-pin__tooltip` for small image popup (180px width, 120px height, fixed position, z-index above pin)\n   - Add inline HTML element to pin markup: `<div class=\"apg-pin__tooltip\"><img class=\"apg-pin__tooltip-img\" alt=\"\"/></div>`\n   - Set tooltip's `display: none` by default, `display: block` on `.apg-pin:hover .apg-pin__tooltip`\n   - Style: `position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%) translateY(-8px); pointer-events: none; background: var(--apg-bg); border-radius: 8px; box-shadow: var(--apg-shadow-md); padding: 4px;`\n   - **HTML Change**: Modify line 127 in MapView.tsx to inject the tooltip div\n\n**3. Bottom Sheet Drag Handle + Resize (CSS + React)**\n   - File: `packages/photo-sdk/src/styles/sdk.css` lines 749–777\n   - Add `.apg-map__sheet-drag-handle` class: small visual bar at top-center of sheet (60px wide, 4px tall, rounded, subtle color, cursor: grab)\n   - Add `.apg-map__sheet-drag-handle:active { cursor: grabbing; }`\n   - Position handle inside `.apg-map__sheet-head` (prepend to head)\n   - File: `packages/photo-sdk/src/components/views/MapView.tsx` lines 21–34 (state) + 226–252 (render)\n   - Add state: `const [sheetHeight, setSheetHeight] = useState<number>(0.5); // fraction of viewport height`\n   - Add `const sheetRef = useRef<HTMLDivElement>(null);`\n   - Add event listeners on component mount:\n     - `onPointerDown` on drag handle → start tracking\n     - `onPointerMove` on document → calculate Y delta, compute new height = max(0.5, min(1.0, sheetHeight - delta))\n     - `onPointerUp` → stop tracking\n   - Apply to sheet: `style={{ height: `${sheetHeight * 100}vh` }}` instead of `max-height`\n   - **Reposition sheet to bottom-RIGHT**: Change `.apg-map__sheet` CSS to `right: 0; width: 40vw; max-width: 600px;` instead of `left: 0; right: 0;` (full width)\n\n**4. Summary of Files to Modify:**\n\n   **packages/photo-sdk/src/styles/sdk.css:**\n   - Lines 697–717 (`.apg-pin` + `.apg-pin__img`): Add `overflow: hidden` to pin, explicit `aspect-ratio: 1/1`\n   - Lines 711–717 (`.apg-pin__img`): Clarify width/height 100%, no margin\n   - Add after line 746: New `.apg-pin__tooltip` class with styles for hover image popup\n   - Lines 749–768 (`.apg-map__sheet`): Change positioning to `right: 0;` instead of `left: 0; right: 0;`, add `width: 40vw; max-width: 600px;`\n   - Add new `.apg-map__sheet-drag-handle` class: `width: 60px; height: 4px; border-radius: 2px; background: var(--apg-separator-strong); margin: 8px auto; cursor: grab; transition: background 0.12s ease;` + hover state\n   - Lines 769–776 (`.apg-map__sheet-head`): Ensure flex-direction column to accommodate handle above or change to accommodate handle\n\n   **packages/photo-sdk/src/components/views/MapView.tsx:**\n   - Line 3: Import `useRef` (already imported)\n   - Lines 21–34 (state + refs): Add `sheetHeight` state + `sheetRef` ref\n   - Lines 126–128 (marker icon HTML): Add tooltip div + img element\n   - After line 144 (marker.on('add') callback): Set tooltip img src = `cover.thumbnail ?? cover.src`\n   - Lines 226–252 (sheet render): Add drag handle element, add `ref={sheetRef}`, add `style={{ height: ... }}`, add `onPointerDown` handler to handle\n   - Add event handler function (before return): `handleDragStart` that listens to pointer events and updates height",
+        "files": [
+          {
+            "path": "packages/photo-sdk/src/styles/sdk.css",
+            "change": "1) Lines 697-747: Update .apg-pin to add 'overflow: hidden; aspect-ratio: 1/1;' and ensure .apg-pin__img is 100% width/height with no margin. 2) After line 747, add new .apg-pin__tooltip class with styles for small image popup (width: 180px, height: 120px, position: absolute, bottom: 100%, left: 50%, transform: translateX(-50%) translateY(-8px), display: none by default, display: block on .apg-pin:hover, background: var(--apg-bg), border-radius: 8px, box-shadow: var(--apg-shadow-md), padding: 4px, pointer-events: none, z-index: 601). 3) Add .apg-pin__tooltip-img class: width 100%, height 100%, object-fit: cover, border-radius: 6px, display: block. 4) Lines 749-768: Change .apg-map__sheet from 'left: 0; right: 0;' to 'right: 0; width: 40vw; max-width: 600px;' to anchor bottom-right. 5) Remove 'max-height: 62%;' and replace with 'height: calc(50vh);' as base (will be controlled by React state). 6) After line 768, add .apg-map__sheet-drag-handle class: width: 60px, height: 4px, border-radius: 2px, background: var(--apg-separator-strong), margin: 8px auto 12px, cursor: grab, transition: background 0.12s ease, user-select: none. Add .apg-map__sheet-drag-handle:hover { background: var(--apg-text-tertiary); } and .apg-map__sheet-drag-handle:active { cursor: grabbing; }."
+          },
+          {
+            "path": "packages/photo-sdk/src/components/views/MapView.tsx",
+            "change": "1) Line 3: Ensure 'useRef' is imported from react (already present). 2) Lines 21-34: Add state 'const [sheetHeight, setSheetHeight] = useState<number>(0.5);' (fraction 0-1 of viewport) and ref 'const sheetRef = useRef<HTMLDivElement>(null); const dragStartY = useRef<number>(0); const dragStartHeight = useRef<number>(0);'. 3) Lines 126-128: Modify marker icon HTML to add tooltip div: '<span class=\"apg-pin\"><img class=\"apg-pin__img\" alt=\"\"/><div class=\"apg-pin__tooltip\"><img class=\"apg-pin__tooltip-img\" alt=\"\"/></div><span class=\"apg-pin__count\"></span></span>'. 4) In marker.on('add') callback (lines 133-144): After setting img.src, also set tooltip img src: 'const tooltip = el.querySelector(\".apg-pin__tooltip-img\") as HTMLImageElement | null; if (tooltip) tooltip.src = cover.thumbnail ?? cover.src;'. 5) Lines 226-252: Change sheet div to add ref={sheetRef}, add style={{ height: `${sheetHeight * window.innerHeight}px` }}, add onPointerDown handler to drag handle. 6) Add drag handle element as first child of sheet-head or as separate element above it: '<div className=\"apg-map__sheet-drag-handle\" onPointerDown={handleDragStart} />'. 7) Before return statement, add event handler function: 'const handleDragStart = (e: React.PointerEvent<HTMLDivElement>) => { dragStartY.current = e.clientY; dragStartHeight.current = sheetHeight; const handleMove = (moveEvent: PointerEvent) => { const delta = dragStartY.current - moveEvent.clientY; const newHeight = Math.max(0.5, Math.min(1, dragStartHeight.current + delta / window.innerHeight)); setSheetHeight(newHeight); }; const handleEnd = () => { document.removeEventListener('pointermove', handleMove); document.removeEventListener('pointerup', handleEnd); }; document.addEventListener('pointermove', handleMove); document.addEventListener('pointerup', handleEnd); e.preventDefault(); };'"
+          }
+        ]
+      },
+      {
+        "area": "macOS Photos-style Gallery SDK Feature Audit",
+        "findings": "## Current State\nThe SDK implements: macOS UI (sidebar, toolbar, window chrome), light/dark/semi-dark themes, responsive design, Collections (Library/Maps/People/Recently Deleted/Albums), multi-select, favorites, hidden items, keyboard shortcuts (Cmd+A, Delete, F, Escape, Space, arrows), albums (CRUD/nested/smart/system), EXIF metadata display, object detection, face clustering, OCR, semantic search, drag-drop import, custom camera (photo+video, front/back, grid, live annotation), photo/video editor (13 sliders, filters, crop/rotate/flip/straighten, markup), generative ops (Gemini + local remove-BG), recycle bin (30-day), sharing (links/albums/activity), and Info panel with metadata + mini-map.\n\n## Missing Advanced Features (Root Causes)\n1. **Lightbox**: No zoom/pan for detail viewing; no adjacent-media filmstrip; video player lacks custom scrubber controls.\n2. **Metadata editing**: Info panel read-only; captions/keywords/location/tags can't be edited post-import; no bulk metadata ops.\n3. **Batch operations**: Only copy/move to album; no mass-tagging, bulk-metadata edits, or confirmation UI for mass-delete.\n4. **Navigation aids**: No timeline scrubber for date jumping; no keyboard-shortcut help modal; album reorder drag-drop incomplete.\n5. **Slideshow & Print**: No slideshow playback (auto-advance with transitions); no print dialog.\n6. **Performance/Accessibility**: No skeleton loaders for library load; no true virtualization (lazy-fill exists); no selection-count bar in lightbox; accessibility gaps (focus indicators, screen-reader labels for complex widgets).\n7. **Smart albums**: No custom rule builder UI; no materialized tag-based albums (currently virtual via object focus).\n8. **Data integrity**: No undo/redo beyond editor; no import validation/preview; limited deduplication UX.",
+        "plan": "Audit the SDK systematically: examine Lightbox for zoom/pan/filmstrip; check InfoPanel editability; review store for undo/redo hooks; assess SelectionBar batch capabilities; verify keyboard shortcut help; cross-ref ROADMAP.md to exclude already-planned work. Return a prioritized feature list (HIGH/MED/LOW) with concrete implementation notes, avoiding duplicates and focusing on features that would make this a truly complete, production-ready gallery app suitable for professional photo workflows.",
+        "files": [
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/components/Lightbox.tsx",
+            "change": "Review: zoom/pan, filmstrip strip, video scrubber"
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/components/InfoPanel.tsx",
+            "change": "Review: metadata field editability and edit UI"
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/store/store.ts",
+            "change": "Review: undo/redo, batch metadata, bulk operations"
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/components/SelectionBar.tsx",
+            "change": "Review: batch action UI (mass-tag, metadata, delete)"
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/packages/photo-sdk/src/hooks/useKeyboardShortcuts.ts",
+            "change": "Review: keyboard shortcut coverage and help UI"
+          },
+          {
+            "path": "d:/advance-photo-gallery-web-sdk/docs/ROADMAP.md",
+            "change": "Cross-ref to exclude already-planned features"
+          }
+        ]
+      }
+    ]
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Investigate"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "plan:persistence-refresh",
+      "phaseIndex": 1,
+      "phaseTitle": "Investigate",
+      "agentId": "ae6123a5c953d933b",
+      "agentType": "Explore",
+      "model": "claude-haiku-4-5-20251001",
+      "state": "done",
+      "startedAt": 1782871537682,
+      "queuedAt": 1782871537626,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Image Loading Race Condition & Persistence Architecture",
+      "promptPreview": "Root-cause the \"on refresh, sometimes not all images show\" bug and design BACKEND-ONLY persistence. Read packages/photo-sdk/src/store/store.ts (init/load/persist), apps/web/src/lib/adapters/supabaseAdapter.ts, apps/web/src/components/GalleryClient.tsx, and the default localStorage adapter. Questions: does the store SEED demo media (so a fresh load shows seed even if backend has fewer)? does localS…",
+      "lastProgressAt": 1782871592462,
+      "tokens": 44404,
+      "toolCalls": 15,
+      "durationMs": 54779,
+      "resultPreview": "{\"area\":\"Image Loading Race Condition & Persistence Architecture\",\"findings\":\"ROOT CAUSE: Three interlocking race conditions cause \\\"on refresh, sometimes not all images show\\\":\\n\\n1. **Seed Data Overwrite (store.ts init)**: Store initializes with 44 seed photos via `initialMedia`, but `init()` runs async. When backend loads, line 306 executes `media: loaded.media.length ? loaded.media : get().med…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "plan:env-theming",
+      "phaseIndex": 1,
+      "phaseTitle": "Investigate",
+      "agentId": "a24228ab4f1626fbd",
+      "agentType": "Explore",
+      "model": "claude-haiku-4-5-20251001",
+      "state": "done",
+      "startedAt": 1782871537686,
+      "queuedAt": 1782871537633,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ENV-driven customization system for PhotoGallery SDK",
+      "promptPreview": "Design an ENV-DRIVEN customization system for the SDK. The SDK renders <PhotoGallery> with a config; the demo (apps/web) reads env. Read packages/photo-sdk/src/components/PhotoGallery.tsx, store.ts (GalleryConfig, GalleryFeatures, theme handling), styles/sdk.css (CSS variables --apg-*), and how the demo passes config (apps/web/src/components/GalleryClient.tsx). Requirement: developers set via env …",
+      "lastProgressAt": 1782871583924,
+      "tokens": 70300,
+      "toolCalls": 19,
+      "durationMs": 46237,
+      "resultPreview": "{\"area\":\"ENV-driven customization system for PhotoGallery SDK\",\"findings\":\"\\nCurrent state analysis:\\n\\n**PhotoGallery Component** (packages/photo-sdk/src/components/PhotoGallery.tsx):\\n- Accepts props: photos, albums, adapter, ai, theme, accentColor, borderRadius, features, showWindowChrome, title\\n- GalleryConfig in store includes: features, accentColor, borderRadius, showWindowChrome, title\\n- …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "plan:upload-pipeline",
+      "phaseIndex": 1,
+      "phaseTitle": "Investigate",
+      "agentId": "a4ca962a7a866d728",
+      "agentType": "Explore",
+      "model": "claude-haiku-4-5-20251001",
+      "state": "done",
+      "startedAt": 1782871537688,
+      "queuedAt": 1782871537633,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Upload Flow Design",
+      "promptPreview": "Design the UPLOAD flow. Read apps/web + packages/photo-sdk: TopToolbar.tsx (the + / Import controls + importFiles), store.ts importFiles/addMedia, LibraryView.tsx drag-drop, lib/media.ts (mediaFromFile, isAcceptedMediaFile), AIAnalyzer.tsx. Requirement: clicking + (and the Import menu item) opens an Upload modal with (a) a Browse button, (b) drag-and-drop zone, (c) multi-file, (d) an album picker …",
+      "lastProgressAt": 1782871599484,
+      "tokens": 59365,
+      "toolCalls": 25,
+      "durationMs": 61796,
+      "resultPreview": "{\"area\":\"Upload Flow Design\",\"findings\":\"CURRENT STATE:\\nThe SDK already has distributed upload capability via TopToolbar.tsx (line 188-198) and LibraryView.tsx (line 51-58), but no unified modal. Both use raw file input elements with accept=\\\"image/*,video/*\\\" and call importFiles(files). Processing happens in store.ts importFiles (line 342-363) which uses mediaFromFile from lib/media.ts to valid…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "plan:video-player",
+      "phaseIndex": 1,
+      "phaseTitle": "Investigate",
+      "agentId": "af2a9e30e02484dba",
+      "agentType": "Explore",
+      "model": "claude-haiku-4-5-20251001",
+      "state": "done",
+      "startedAt": 1782871537689,
+      "queuedAt": 1782871537633,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Custom macOS-style Video Player for Lightbox",
+      "promptPreview": "Design a CUSTOM macOS-style video player to replace native <video controls> in the lightbox. Read packages/photo-sdk/src/components/Lightbox.tsx (how videos render), styles/sdk.css. Plan a VideoPlayer component: custom transport (play/pause, scrubber with buffered/played, current/total time, volume, mute, fullscreen, PiP), auto-hiding glass controls overlay, keyboard (space/arrows), macOS look. Al…",
+      "lastProgressAt": 1782871599369,
+      "tokens": 47380,
+      "toolCalls": 19,
+      "durationMs": 61680,
+      "resultPreview": "{\"area\":\"Custom macOS-style Video Player for Lightbox\",\"findings\":\"\\nCURRENT STATE:\\n- Lightbox.tsx (line 147-148) renders videos using bare native `<video controls autoPlay playsInline>` element\\n- No custom video controls exist; native browser controls are used\\n- Lightbox has a fixed top bar with metadata (title, date, location) and action buttons (info, favorite, edit, download, delete)\\n- Edi…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "plan:map-sheet-pins",
+      "phaseIndex": 1,
+      "phaseTitle": "Investigate",
+      "agentId": "a2e41a9723559c9cd",
+      "agentType": "Explore",
+      "model": "claude-haiku-4-5-20251001",
+      "state": "done",
+      "startedAt": 1782871537690,
+      "queuedAt": 1782871537633,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Map View Pin Thumbnails + Bottom Sheet Drag-to-Resize",
+      "promptPreview": "Improve the Map. Read packages/photo-sdk/src/components/views/MapView.tsx + the .apg-pin / .apg-map__sheet CSS in styles/sdk.css. Fixes: (1) pin thumbnails must be square-cropped (object-fit cover in a fixed square) — currently non-square images overflow the pin; (2) hovering a pin shows a small image popup/tooltip; (3) clicking a pin opens a bottom sheet anchored bottom-RIGHT at half-height with …",
+      "lastProgressAt": 1782871576051,
+      "tokens": 37603,
+      "toolCalls": 7,
+      "durationMs": 38361,
+      "resultPreview": "{\"area\":\"Map View Pin Thumbnails + Bottom Sheet Drag-to-Resize\",\"findings\":\"**Current State:**\\n\\n**MapView.tsx** (lines 13–254):\\n- Renders a Leaflet map with location clusters as pins\\n- Each pin displays a thumbnail image (`apg-pin__img`) with optional count badge\\n- Pin markup: `<span class=\\\"apg-pin\\\"><img class=\\\"apg-pin__img\\\" .../><span class=\\\"apg-pin__count\\\"></span></span>` (lines 126–1…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "plan:missing-features",
+      "phaseIndex": 1,
+      "phaseTitle": "Investigate",
+      "agentId": "af7a6e8b5f8c4b054",
+      "agentType": "Explore",
+      "model": "claude-haiku-4-5-20251001",
+      "state": "done",
+      "startedAt": 1782871537690,
+      "queuedAt": 1782871537633,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "macOS Photos-style Gallery SDK Feature Audit",
+      "promptPreview": "Audit this macOS-Photos-style gallery SDK for MISSING or worth-adding ADVANCED features, to make it a truly complete gallery app. Read the component/view list under packages/photo-sdk/src/components + views, store.ts actions, and docs/ROADMAP.md (what's already done — don't re-suggest those). Consider: slideshow/Memories playback, favorites/hide, info/metadata editing, keyboard shortcuts help, dra…",
+      "lastProgressAt": 1782871755647,
+      "tokens": 61037,
+      "toolCalls": 49,
+      "durationMs": 217957,
+      "resultPreview": "{\"area\":\"macOS Photos-style Gallery SDK Feature Audit\",\"findings\":\"## Current State\\nThe SDK implements: macOS UI (sidebar, toolbar, window chrome), light/dark/semi-dark themes, responsive design, Collections (Library/Maps/People/Recently Deleted/Albums), multi-select, favorites, hidden items, keyboard shortcuts (Cmd+A, Delete, F, Escape, Space, arrows), albums (CRUD/nested/smart/system), EXIF met…"
+    }
+  ],
+  "totalTokens": 320089,
+  "totalToolCalls": 134
+}
