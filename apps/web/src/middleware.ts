@@ -10,7 +10,6 @@ import { type NextRequest, NextResponse } from 'next/server';
  */
 export function middleware(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
-  const isDev = process.env.NODE_ENV === 'development';
 
   const csp = [
     "default-src 'self'",
@@ -18,7 +17,10 @@ export function middleware(request: NextRequest) {
     // cdn.jsdelivr.net = defense for tesseract.js' worker bootstrap (the load-bearing
     // path is the blob: worker + connect-src fetch; under 'strict-dynamic' this host is
     // ignored, but it covers non-strict-dynamic fallback browsers).
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval' https://cdn.jsdelivr.net${isDev ? " 'unsafe-eval'" : ''}`,
+    // 'unsafe-eval' is required by onnxruntime-web (Remove Background @imgly, CLIP
+    // semantic search) which evals a JS glue string — 'wasm-unsafe-eval' alone
+    // doesn't cover it. Trade-off: needed for the in-browser ML to run in production.
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval' 'unsafe-eval' https://cdn.jsdelivr.net`,
     // Leaflet & Framer Motion inject inline styles; keep style inline allowed.
     "style-src 'self' 'unsafe-inline'",
     // *.supabase.co serves uploaded media from Supabase Storage public URLs.
