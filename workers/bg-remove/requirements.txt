@@ -1,0 +1,6 @@
+# Background-removal worker (CPU). rembg pulls onnxruntime (CPU) + opencv itself.
+rembg==2.0.59
+onnxruntime==1.17.3
+numpy<2
+Pillow==10.4.0
+runpod==1.7.9

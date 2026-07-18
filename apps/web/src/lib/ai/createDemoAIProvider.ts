@@ -45,6 +45,32 @@ export function createDemoAIProvider(): AIProvider {
       // Remove Background runs fully in-browser (free, no key) via @imgly — works
       // even with no backend. Other ops go through the /api/ai/edit route.
       if (op.type === 'remove-background') {
+        // Prefer the RunPod U²-Net endpoint when enabled; fall back to in-browser
+        // @imgly if it's off or the request fails, so this always produces a result.
+        if (process.env.NEXT_PUBLIC_APG_RUNPOD_BG === 'true') {
+          try {
+            const { data, mimeType } = imageToBase64(image, 1600);
+            const res = await fetch('/api/ai/edit', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                imageBase64: data,
+                mimeType,
+                op: { type: 'remove-background' },
+                params: {},
+              }),
+            });
+            if (res.ok) {
+              const { imageBase64: out, mimeType: outMime } = (await res.json()) as {
+                imageBase64: string;
+                mimeType?: string;
+              };
+              return base64ToBlob(out, outMime || 'image/png');
+            }
+          } catch {
+            /* fall through to the in-browser remover */
+          }
+        }
         const inputBlob = await canvasBlob(image, 1600);
         const { removeBackground } = await import('@imgly/background-removal');
         return removeBackground(inputBlob, { output: { format: 'image/png' } });

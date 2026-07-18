@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 
 import { RunpodError } from '../../../../lib/runpod/client';
-import { rpImg2Img, rpInpaint, rpUpscale } from '../../../../lib/runpod/endpoints';
+import { rpImg2Img, rpInpaint, rpRemoveBackground, rpUpscale } from '../../../../lib/runpod/endpoints';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60; // SD / cold-start models can take a while
@@ -195,6 +195,9 @@ async function editRunPod(
 ): Promise<EditResult> {
   const params = sanitizeParams(rawParams);
   switch (op.type) {
+    case 'remove-background':
+      // U²-Net via rembg (#6) — a real endpoint replacing the flaky in-browser remover.
+      return rpRemoveBackground(imageBase64);
     case 'restore':
       // Real-ESRGAN (#7) with the GFPGAN face pass = "Restore & Enhance".
       return rpUpscale(imageBase64, 4, true);
