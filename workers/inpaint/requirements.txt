@@ -1,0 +1,8 @@
+# SDXL inpainting worker. torch is installed (cu121) in the Dockerfile first.
+# AutoPipelineForInpainting + SDXL uses two text encoders → transformers.
+diffusers>=0.30.0
+transformers>=4.44.0
+accelerate>=0.34.0
+safetensors>=0.4.5
+Pillow==10.4.0
+runpod==1.7.9
