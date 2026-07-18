@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 
 import { RunpodError } from '../../../../lib/runpod/client';
-import { rpColorize, rpImg2Img, rpInpaint, rpUpscale } from '../../../../lib/runpod/endpoints';
+import { rpImg2Img, rpInpaint, rpUpscale } from '../../../../lib/runpod/endpoints';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60; // SD / cold-start models can take a while
@@ -201,7 +201,10 @@ async function editRunPod(
     case 'upscale':
       return rpUpscale(imageBase64, op.factor === 4 ? 4 : 2, false);
     case 'colorize':
-      return rpColorize(imageBase64); // DDColor (#8)
+      // The dedicated DDColor endpoint kept hard-crashing (modelscope). Route
+      // colorize through the img2img model as an instruction instead — reliable,
+      // and high quality once img2img is FLUX. (RUNPOD_COLORIZE_URL now unused.)
+      return rpImg2Img({ imageB64: imageBase64, prompt: instruction, ...params });
     case 'prompt':
       return rpImg2Img({ imageB64: imageBase64, prompt: instruction, ...params }); // SD 3.5 img2img (#10)
     case 'replace-sky':
