@@ -173,27 +173,11 @@ export async function bakeVideo(
   try {
     const vNode = ac.createMediaElementSource(video);
     const vGain = ac.createGain();
-    vGain.gain.value = edits.audio?.muted ? 0 : (edits.audio?.originalVolume ?? 1);
-    if (edits.audio?.denoise) {
-      // Background-noise reduction: high-pass kills low rumble/hum, low-pass trims
-      // hiss, and a compressor pulls down the noise floor (soft gate). Real-time,
-      // so it works inside the export pipeline (a network round-trip could not).
-      const hp = ac.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 100;
-      const lp = ac.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.value = 12000;
-      const comp = ac.createDynamicsCompressor();
-      comp.threshold.value = -50;
-      comp.knee.value = 20;
-      comp.ratio.value = 12;
-      comp.attack.value = 0.003;
-      comp.release.value = 0.25;
-      vNode.connect(hp).connect(lp).connect(comp).connect(vGain).connect(master);
-    } else {
-      vNode.connect(vGain).connect(master);
-    }
+    // When an AI-denoised track was produced, mute the original and play the clean
+    // one instead (added below); otherwise use the original at its set volume.
+    const hasClean = Boolean(edits.audio?.denoisedSrc);
+    vGain.gain.value = edits.audio?.muted || hasClean ? 0 : (edits.audio?.originalVolume ?? 1);
+    vNode.connect(vGain).connect(master);
   } catch {
     /* element may have no audio track */
   }
@@ -206,6 +190,21 @@ export async function bakeVideo(
       const gain = ac.createGain();
       gain.gain.value = edits.audio.musicVolume ?? 0.8;
       mNode.connect(gain).connect(master);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // AI-denoised original audio (RunPod): play it in place of the muted original.
+  let denoised: HTMLAudioElement | null = null;
+  if (edits.audio?.denoisedSrc && !edits.audio?.muted) {
+    denoised = new Audio(edits.audio.denoisedSrc);
+    denoised.crossOrigin = 'anonymous';
+    try {
+      const dNode = ac.createMediaElementSource(denoised);
+      const dGain = ac.createGain();
+      dGain.gain.value = edits.audio.originalVolume ?? 1;
+      dNode.connect(dGain).connect(master);
     } catch {
       /* ignore */
     }
@@ -302,6 +301,7 @@ export async function bakeVideo(
     await seekTo(video, seg.start);
     video.playbackRate = seg.speed || 1;
     if (music && seg === segs[0]) await music.play().catch(() => {});
+    if (denoised && seg === segs[0]) await denoised.play().catch(() => {});
     await video.play().catch(() => {});
     const segOut = (seg.end - seg.start) / (seg.speed || 1);
     // Guard against a stalled decoder (autoplay blocked, boundary glitch).
@@ -329,6 +329,7 @@ export async function bakeVideo(
   }
 
   music?.pause();
+  denoised?.pause();
   if (recorder.state !== 'inactive') recorder.stop();
   await stopped;
   opts.signal?.removeEventListener('abort', onAbort);

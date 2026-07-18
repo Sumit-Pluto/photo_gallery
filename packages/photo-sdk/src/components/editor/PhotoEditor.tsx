@@ -18,6 +18,7 @@ import { useAIProvider } from '../aiContext';
 import { Annotations, type AnnotationTool } from './Annotations';
 import { CropBox, type CropRect } from './CropBox';
 import { MaskBrush } from './MaskBrush';
+import { VoiceButton } from './VoiceButton';
 
 const RATIOS: Array<{ label: string; value: number | null }> = [
   { label: 'Free', value: null },
@@ -594,6 +595,28 @@ export function PhotoEditor() {
                     </button>
                   ))}
                 </div>
+                {provider?.transcribeAudio ? (
+                  <VoiceButton
+                    label="Speak → add text"
+                    onText={(t) => {
+                      setAnnotations([
+                        ...annotations,
+                        {
+                          id: nanoid(8),
+                          shape: 'text',
+                          color: annColor,
+                          strokeWidth: 2,
+                          x1: 0.08,
+                          y1: 0.08,
+                          x2: 0.55,
+                          y2: 0.17,
+                          text: t,
+                        },
+                      ]);
+                      setAnnTool('select');
+                    }}
+                  />
+                ) : null}
                 <div>
                   <div style={{ fontSize: 12, color: '#9b9ba1', marginBottom: 6 }}>Color</div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

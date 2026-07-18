@@ -9,6 +9,9 @@ import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { editFilterCss } from '../../lib/edits';
 import { summarizeEdits } from '../../lib/versions';
 import { bakeVideo } from '../../lib/videoBake';
+import { blobToWavBase64, wavBase64ToBlob } from '../../lib/audioCapture';
+import { useAIProvider } from '../aiContext';
+import { VoiceButton } from './VoiceButton';
 import {
   normalizeSegments,
   outputDuration,
@@ -91,6 +94,9 @@ export function VideoEditor() {
   const [duration, setDuration] = useState(0);
   const [playhead, setPlayhead] = useState(0);
   const [selOverlay, setSelOverlay] = useState<string | null>(null);
+  const provider = useAIProvider();
+  const [denoiseBusy, setDenoiseBusy] = useState(false);
+  const [denoiseErr, setDenoiseErr] = useState<string | null>(null);
   const [previewH, setPreviewH] = useState(360);
   const [baking, setBaking] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -209,6 +215,26 @@ export function VideoEditor() {
       opacity: 1,
       rotation: 0,
     });
+  const runVideoDenoise = async () => {
+    if (!provider?.denoiseAudio) return;
+    setDenoiseBusy(true);
+    setDenoiseErr(null);
+    try {
+      const resp = await fetch(item.src);
+      const blob = await resp.blob();
+      // Decode the video's audio track → 48 kHz mono WAV → RunPod denoise → clean WAV.
+      const wav48 = await blobToWavBase64(blob, 48000);
+      const cleaned = await provider.denoiseAudio(wav48);
+      const url = URL.createObjectURL(wavBase64ToBlob(cleaned));
+      update({ audio: { ...edits.audio, denoisedSrc: url } });
+    } catch (e) {
+      setDenoiseErr(
+        e instanceof Error ? e.message : 'Could not clean the audio (keep clips under ~30s).',
+      );
+    } finally {
+      setDenoiseBusy(false);
+    }
+  };
   const addKeyframe = (id: string) => {
     const o = overlays.find((x) => x.id === id);
     if (!o) return;
@@ -651,6 +677,13 @@ export function VideoEditor() {
                             onChange={(e) => patchOverlay(sel.id, { text: e.target.value })}
                           />
                         </label>
+                        <VoiceButton
+                          label="Speak → text"
+                          onText={(t) => {
+                            const cur = sel.text && sel.text !== 'Your text' ? sel.text : '';
+                            patchOverlay(sel.id, { text: cur ? `${cur} ${t}` : t });
+                          }}
+                        />
                         <div style={{ display: 'flex', gap: 6, margin: '4px 0' }}>
                           {COLORS.map((c) => (
                             <button
@@ -794,14 +827,33 @@ export function VideoEditor() {
                     onChange={(e) => update({ audio: { ...edits.audio, muted: e.target.checked } })} />
                   Mute original audio
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={!!edits.audio?.denoise}
-                    onChange={(e) => update({ audio: { ...edits.audio, denoise: e.target.checked } })}
-                  />
-                  Reduce background noise
-                </label>
+                {provider?.denoiseAudio ? (
+                  edits.audio?.denoisedSrc ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                      <span style={{ color: '#34c759' }}>✓ Background noise reduced (AI)</span>
+                      <button
+                        type="button"
+                        className="apg-btn apg-btn--small"
+                        onClick={() => update({ audio: { ...edits.audio, denoisedSrc: undefined } })}
+                      >
+                        Undo
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="apg-btn apg-btn--primary"
+                      disabled={denoiseBusy}
+                      onClick={() => void runVideoDenoise()}
+                    >
+                      <Icon name="wand" size={14} />{' '}
+                      {denoiseBusy ? 'Cleaning audio…' : 'Reduce background noise (AI)'}
+                    </button>
+                  )
+                ) : null}
+                {denoiseErr ? (
+                  <p style={{ color: '#ff6b6b', fontSize: 12, margin: 0 }}>{denoiseErr}</p>
+                ) : null}
                 {!edits.audio?.muted ? (
                   <label className="apg-vedit__row">
                     <span>Original volume {Math.round((edits.audio?.originalVolume ?? 1) * 100)}%</span>
