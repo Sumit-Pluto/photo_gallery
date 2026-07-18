@@ -10,7 +10,7 @@ import { useGallery, useGalleryStoreApi } from '../store/context';
 import type { MediaItem } from '../types';
 
 const CONCURRENCY = 2;
-const CONFIDENCE = 0.5;
+const CONFIDENCE = 0.15;
 const START_DELAY_MS = 1200;
 
 /**

@@ -32,8 +32,12 @@ def handler(event):
         image_bytes = base64.b64decode(image_b64)
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
+        # Custom construction models are often less confident than COCO — use a low
+        # detection floor (env YOLO_CONF, default 0.15) so real brick/pipe/steel hits
+        # come through instead of being dropped by ultralytics' default 0.25.
+        conf = float(data.get("conf") or os.environ.get("YOLO_CONF", "0.15"))
         model = _load_model()
-        results = model.predict(image, verbose=False)
+        results = model.predict(image, conf=conf, verbose=False)
 
         detections = []
         for result in results:
