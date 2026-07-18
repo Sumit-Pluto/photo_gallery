@@ -1,0 +1,7 @@
+runpod==1.7.9
+diffusers==0.31.0
+transformers==4.46.3
+accelerate==1.1.1
+safetensors==0.4.5
+huggingface_hub==0.26.2
+Pillow==10.4.0

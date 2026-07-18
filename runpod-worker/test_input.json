@@ -1,0 +1,8 @@
+{
+  "input": {
+    "image": "PASTE_BASE64_IMAGE_HERE",
+    "prompt": "a vibrant golden-hour sky, dramatic clouds, photorealistic",
+    "strength": 0.6,
+    "num_inference_steps": 25
+  }
+}
