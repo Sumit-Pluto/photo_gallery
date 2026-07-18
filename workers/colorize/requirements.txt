@@ -1,0 +1,8 @@
+runpod==1.7.9
+torch==2.1.2
+torchvision==0.16.2
+modelscope==1.9.5
+opencv-python-headless==4.9.0.80
+pillow==10.2.0
+numpy==1.24.4
+timm==0.9.12

@@ -1,0 +1,6 @@
+runpod==1.7.9
+realesrgan==0.3.0
+basicsr==1.4.2
+gfpgan==1.3.8
+numpy==1.24.4
+pillow==10.4.0
