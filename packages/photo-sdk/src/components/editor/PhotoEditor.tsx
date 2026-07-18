@@ -724,8 +724,8 @@ export function PhotoEditor() {
                 <button
                   type="button"
                   className="apg-editor__tab"
-                  disabled={aiBusy || !aiPrompt.trim()}
-                  title={!aiPrompt.trim() ? 'Type what to put there in the prompt box above first' : undefined}
+                  disabled={aiBusy}
+                  title="Paint an area, then it fills it — type a prompt above to control what appears (optional)"
                   onClick={() => setMaskMode('generative-fill')}
                 >
                   <Icon name="image" size={16} /> Generative Fill (paint + prompt)

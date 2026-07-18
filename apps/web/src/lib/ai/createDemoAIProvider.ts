@@ -58,8 +58,9 @@ export function createDemoAIProvider(): AIProvider {
           image,
           typeof op.factor === 'number' ? op.factor : 1.5,
         );
-        const outParams: Record<string, unknown> = {};
-        if (typeof op.strength === 'number') outParams.strength = op.strength;
+        const outParams: Record<string, unknown> = {
+          strength: typeof op.strength === 'number' ? op.strength : 0.85,
+        };
         const outRes = await fetch('/api/ai/edit', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -221,8 +222,12 @@ function padForOutpaint(
   imgCanvas.height = ph;
   const ictx = imgCanvas.getContext('2d');
   if (!ictx) throw new Error('Canvas not supported.');
-  ictx.fillStyle = '#808080';
-  ictx.fillRect(0, 0, pw, ph);
+  // Fill the new border with a blurred, stretched copy of the photo so the model
+  // has real color/context to continue from — flat gray gives it nothing and it
+  // leaves the border gray. Then draw the original sharp on top, centered.
+  ictx.filter = 'blur(28px)';
+  ictx.drawImage(image as CanvasImageSource, 0, 0, pw, ph);
+  ictx.filter = 'none';
   ictx.drawImage(image as CanvasImageSource, ox, oy, iw, ih);
 
   const maskCanvas = document.createElement('canvas');
