@@ -52,6 +52,9 @@ export function createMediaItem(input: MediaInput): MediaItem {
     caption: input.caption,
     objects: input.objects,
     faces: input.faces,
+    // Preserve OCR text through the normalization path — without this it's dropped
+    // on every reload, so the analyzer re-runs OCR on the whole library each time.
+    ocrText: input.ocrText,
     analyzedAt: input.analyzedAt,
     colorPalette: input.colorPalette,
     blurScore: input.blurScore,

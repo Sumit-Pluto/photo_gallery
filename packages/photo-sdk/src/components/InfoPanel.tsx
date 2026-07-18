@@ -113,8 +113,13 @@ export function InfoPanel() {
                 lng={item.location.lng}
                 onOpen={() => api.getState().focusMap({ lat: item.location!.lat, lng: item.location!.lng })}
               />
+              <AddressLookup
+                lat={item.location.lat}
+                lng={item.location.lng}
+                onOpenMap={() => api.getState().focusMap({ lat: item.location!.lat, lng: item.location!.lng })}
+              />
               <div style={{ fontSize: 11, color: 'var(--apg-text-tertiary)', marginTop: 4 }}>
-                Click the map to open it in full.
+                Click the map or address to open it in full.
               </div>
             </>
           ) : null}
@@ -342,6 +347,72 @@ function Chips({
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * "Show address" button → reverse-geocodes the GPS coords to a human-readable
+ * address (free OpenStreetMap Nominatim). Clicking the resolved address opens the
+ * full Map at that location.
+ */
+function AddressLookup({ lat, lng, onOpenMap }: { lat: number; lng: number; onOpenMap: () => void }) {
+  const [address, setAddress] = useState<string | null>(null);
+  const [state, setState] = useState<'idle' | 'loading' | 'error'>('idle');
+
+  const lookup = async () => {
+    setState('loading');
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=18&addressdetails=1`,
+        { headers: { Accept: 'application/json' } },
+      );
+      const data = (await res.json()) as { display_name?: string };
+      if (data?.display_name) {
+        setAddress(data.display_name);
+        setState('idle');
+      } else {
+        setState('error');
+      }
+    } catch {
+      setState('error');
+    }
+  };
+
+  if (address) {
+    return (
+      <button
+        type="button"
+        onClick={onOpenMap}
+        title="Open in Map"
+        style={{
+          display: 'block',
+          textAlign: 'left',
+          width: '100%',
+          marginTop: 6,
+          padding: '6px 8px',
+          background: 'var(--apg-bg-elevated)',
+          border: '1px solid var(--apg-glass-border, rgba(255,255,255,0.1))',
+          borderRadius: 8,
+          color: 'var(--apg-text)',
+          fontSize: 12,
+          cursor: 'pointer',
+        }}
+      >
+        📍 {address}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="apg-btn apg-btn--small"
+      onClick={() => void lookup()}
+      disabled={state === 'loading'}
+      style={{ marginTop: 6 }}
+    >
+      {state === 'loading' ? 'Looking up…' : state === 'error' ? 'Retry address' : 'Show address'}
+    </button>
   );
 }
 

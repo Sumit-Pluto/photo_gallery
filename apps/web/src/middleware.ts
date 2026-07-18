@@ -30,7 +30,7 @@ export function middleware(request: NextRequest) {
     // cdn.jsdelivr.net = face-api models + tesseract.js worker/WASM-core/traineddata (OCR) + onnxruntime WASM;
     // huggingface.co + *.hf.co = transformers.js CLIP model config + weights, which
     // redirect to HF's Xet CDN (e.g. us.aws.cdn.hf.co) — semantic search.
-    "connect-src 'self' blob: data: https://*.tile.openstreetmap.org https://server.arcgisonline.com https://picsum.photos https://fastly.picsum.photos https://storage.googleapis.com https://*.supabase.co https://staticimgly.com https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co",
+    "connect-src 'self' blob: data: https://*.tile.openstreetmap.org https://nominatim.openstreetmap.org https://server.arcgisonline.com https://picsum.photos https://fastly.picsum.photos https://storage.googleapis.com https://*.supabase.co https://staticimgly.com https://cdn.jsdelivr.net https://huggingface.co https://*.huggingface.co https://*.hf.co",
     "worker-src 'self' blob:",
     "frame-ancestors 'none'",
     "base-uri 'self'",
