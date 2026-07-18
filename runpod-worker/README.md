@@ -1,67 +1,49 @@
-# SD image-editing worker (RunPod Serverless)
+# Instruct-Pix2Pix image-editing worker (RunPod Serverless)
 
-A Stable Diffusion **img2img + inpaint** worker that powers the gallery editor's
-**Apply Prompt** (#10) and **Replace Sky** (#9) buttons. Its input/output already
-matches the app's RunPod client, so **no app code changes are needed** — you just
-deploy this and set two env vars in Vercel.
+Instruction-based image editing that powers the gallery editor's **Apply Prompt**
+button. Instruct-Pix2Pix is *trained to follow edit instructions* ("make it
+golden hour", "add snow", "turn the sky orange") and applies them while keeping
+the rest of the photo — unlike plain SD img2img.
+
+Small (~2 GB), runs on your existing 24 GB endpoint, **no gated license, no HF
+token, no volume resize**. Input/output matches the app, so no app-code change.
 
 ## Contract
 
-Request → `POST /runsync` with:
+Request → `POST /runsync`:
 ```json
-{ "input": {
-    "image": "<base64>",            // required
-    "prompt": "<text>",             // required
-    "mask": "<base64>",             // optional → inpaint (white = regenerate)
-    "strength": 0.6,                // optional 0..1
-    "guidance_scale": 7.0,          // optional
-    "num_inference_steps": 30,      // optional
-    "negative_prompt": "...",       // optional
-    "seed": 123                     // optional
-} }
+{ "input": { "image": "<base64>", "prompt": "<edit instruction>",
+             "guidance_scale": 7.5, "num_inference_steps": 25, "seed": 123 } }
 ```
 Response → `{ "output": { "image": "<base64 PNG>" } }` (or `{ "output": { "error": "..." } }`).
 
-## Deploy (RunPod)
+`strength` / `mask` from the app are ignored (this model conditions on the image
+via `image_guidance_scale`, not img2img noise or masks).
 
-1. Put these 4 files (`handler.py`, `requirements.txt`, `Dockerfile`, this README) at
-   the **root of a new GitHub repo**, e.g. `crm-sd-worker`, and push.
-2. RunPod → **Serverless → New Endpoint → Deploy from a GitHub repository** →
-   connect GitHub → pick the repo. RunPod finds the `Dockerfile` and builds it (~5–10 min).
-3. Configure:
-   - **GPU:** 24 GB (RTX 4090) recommended for SDXL. (16 GB can work with the
-     memory-saving options already enabled, but 24 GB is safer.)
-   - **Region:** the **same** data center as your `models` network volume (US-NC-1).
-   - **Network Volume:** attach `models` (weights cache to `/runpod-volume` → fast
-     future cold starts).
-   - **Workers:** Max = 1, Active/Min = 0, **FlashBoot = ON**.
-   - **Idle timeout:** ~10s (raise it to keep the worker warm longer).
-   - **Execution timeout:** raise to ~600s so the FIRST request (model download) can finish.
+## Deploy (reuse your existing endpoint)
 
-## First run = one-time model download
-
-The **first** request downloads SDXL (~7 GB) to the volume, so it can take a few
-minutes. Do this **once from RunPod's own console** (the endpoint's "Requests" tab →
-paste a payload → Run) so it warms up without hitting the app's 55s timeout. After
-that, requests are fast and you can wire the app.
-
-## Wire into the app (Vercel)
-
-In your Vercel project → Settings → Environment Variables (do **not** use `NEXT_PUBLIC_`):
+No RunPod settings to change — just push, and RunPod auto-rebuilds:
+```bash
+cd "advance-photo-gallery-web-sdk - Copy"
+git add runpod-worker
+git commit -m "Switch worker to Instruct-Pix2Pix"
+git push
 ```
-AI_EDIT_PROVIDER      = runpod
-RUNPOD_API_KEY        = <your RunPod API key>
-RUNPOD_SD_IMG2IMG_URL = https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync
-RUNPOD_SD_INPAINT_URL = https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync   # same endpoint — it does both
+Then **warm up once** (downloads ~2 GB — quick):
+```bash
+curl -X POST https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync \
+  -H "Content-Type: application/json" -H "Authorization: Bearer <API_KEY>" \
+  -d @runpod-worker/warmup.json
 ```
-Redeploy → open a photo → Edit → AI tab → **Apply Prompt** (type e.g. "make it golden hour").
+Test **Apply Prompt** in the app — no Vercel change (same URL).
 
 ## Tuning (optional endpoint env vars)
 
 | Var | Default | Purpose |
 |---|---|---|
-| `SD_IMG2IMG_MODEL` | `stabilityai/stable-diffusion-xl-base-1.0` | img2img model |
-| `SD_INPAINT_MODEL` | `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` | inpaint model |
-| `SD_MAX_SIZE` | `1024` | max long-edge px (lower = faster/cheaper) |
+| `IP2P_MODEL` | `timbrooks/instruct-pix2pix` | the model |
+| `IP2P_IMAGE_GUIDANCE` | `1.5` | higher keeps more of the original; **lower toward ~1.2 if edits feel too weak** |
+| `IP2P_MAX_SIZE` | `768` | max long-edge px (SD1.5 works best ≤ 768) |
 
-For a **lighter/faster** first run, set both models to an SD 1.5 pair (runs on ~8 GB).
+**Prompts work best as imperatives:** "make it a golden-hour sunset", "add snow",
+"turn it into winter" — not descriptions.
