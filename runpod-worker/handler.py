@@ -1,70 +1,54 @@
 """
-RunPod Serverless worker: Instruct-Pix2Pix instruction-based image editing.
+RunPod Serverless worker: FLUX.2 [klein] 4B instruction image editing (img2img).
 
-Trained specifically on "instruction -> edited photo" examples, so it applies
-edits like "make it golden hour" / "add snow" while keeping the rest of the
-photo — unlike plain SD img2img, which just re-draws toward a caption.
+Replaces the old Instruct-Pix2Pix worker. FLUX.2-klein is Apache-2.0 (no HF token),
+runs on a 24 GB card (RTX 3090), and is distilled → ~6 steps, fast. It needs a
+recent torch, which also carries kernels for the newest (Blackwell) GPUs — so it
+runs on whatever card RunPod assigns.
 
-Small (~2 GB fp16), runs on a modest GPU (your existing 24 GB card is plenty),
-no gated license, no HF token.
-
-Matches the app's RunPod contract (no app-code change needed):
+Matches the app's img2img contract (no app-code change needed):
   {"input": {
-     "image": "<base64>",          # required (raw base64 or data: URI)
-     "prompt": "<instruction>",    # required — plain-English edit instruction
-     "guidance_scale": 7.5,        # optional — how strongly to follow the instruction
-     "num_inference_steps": 25,    # optional
-     "negative_prompt": "...",     # optional
-     "seed": 123                   # optional
+     "image": "<base64>",   # required (raw base64 or data: URI)
+     "prompt": "<edit instruction>",  # required
+     "strength": 0.6,       # optional — the editor's "Edit strength" slider (mapped to guidance)
+     "seed": 123            # optional
   }}
 Returns: {"image": "<base64 PNG>"}  (or {"error": "..."}).
 
-`strength` and `mask` from the app are ignored (this model conditions on the
-image via image_guidance_scale, not img2img noise or masks).
-
-Tuning (env vars):
-  IP2P_MODEL            (default timbrooks/instruct-pix2pix)
-  IP2P_IMAGE_GUIDANCE   (default 1.5 — higher keeps more of the original;
-                         LOWER it toward ~1.2 if edits feel too weak)
-  IP2P_MAX_SIZE         (default 768 — SD1.5 works best <= 768)
+Tuning (env): FLUX2_MODEL (default black-forest-labs/FLUX.2-klein-4B),
+FLUX2_STEPS (default 6), FLUX2_MAX_SIZE (default 1024).
 """
 
 import base64
 import io
 import os
 
-_VOLUME = "/runpod-volume"
-if os.path.isdir(_VOLUME):
-    os.environ.setdefault("HF_HOME", os.path.join(_VOLUME, "huggingface"))
+_V = "/runpod-volume"
+if os.path.isdir(_V):
+    os.environ.setdefault("HF_HOME", os.path.join(_V, "huggingface"))
 
 import torch  # noqa: E402
 import runpod  # noqa: E402
 from PIL import Image  # noqa: E402
-from diffusers import (  # noqa: E402
-    StableDiffusionInstructPix2PixPipeline,
-    EulerAncestralDiscreteScheduler,
-)
+from diffusers import Flux2KleinPipeline  # noqa: E402
 
-MODEL = os.environ.get("IP2P_MODEL", "timbrooks/instruct-pix2pix")
-IMAGE_GUIDANCE = float(os.environ.get("IP2P_IMAGE_GUIDANCE", "1.5"))
-MAX_SIZE = int(os.environ.get("IP2P_MAX_SIZE", "768"))
+MODEL = os.environ.get("FLUX2_MODEL", "black-forest-labs/FLUX.2-klein-4B")
+STEPS = int(os.environ.get("FLUX2_STEPS", "6"))
+MAX_SIZE = int(os.environ.get("FLUX2_MAX_SIZE", "1024"))
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
-
 _pipe = None
 
 
 def _get_pipe():
     global _pipe
     if _pipe is None:
-        common = {"torch_dtype": DTYPE, "safety_checker": None, "requires_safety_checker": False}
-        try:
-            pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(MODEL, variant="fp16", **common)
-        except Exception:
-            pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(MODEL, **common)
-        pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
-        pipe = pipe.to(DEVICE)
+        pipe = Flux2KleinPipeline.from_pretrained(MODEL, torch_dtype=torch.bfloat16)
+        total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if DEVICE == "cuda" else 0
+        if total_gb >= 20:
+            pipe = pipe.to("cuda")
+        else:
+            pipe.enable_model_cpu_offload()
         pipe.set_progress_bar_config(disable=True)
         _pipe = pipe
     return _pipe
@@ -85,8 +69,8 @@ def _image_to_b64(img):
 def _fit(img):
     w, h = img.size
     scale = min(1.0, MAX_SIZE / max(w, h))
-    nw = max(8, (int(w * scale) // 8) * 8)
-    nh = max(8, (int(h * scale) // 8) * 8)
+    nw = max(16, (int(w * scale) // 16) * 16)
+    nh = max(16, (int(h * scale) // 16) * 16)
     return img.resize((nw, nh), Image.LANCZOS)
 
 
@@ -101,32 +85,23 @@ def handler(event):
 
     try:
         image = _fit(_b64_to_image(image_b64))
-        steps = max(1, min(50, int(inp.get("num_inference_steps", 25))))
-        guidance = float(inp.get("guidance_scale", 7.5))
-        negative = inp.get("negative_prompt") or None
+        # The editor's "Edit strength" slider (0..1) maps to guidance — FLUX.2 klein
+        # likes low guidance (~1); stronger = higher.
+        guidance = 1.0
+        strength = inp.get("strength")
+        if strength is not None:
+            s = max(0.0, min(1.0, float(strength)))
+            guidance = round(1.0 + s * 3.0, 2)
         seed = inp.get("seed")
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device=DEVICE).manual_seed(int(seed))
-
-        # The app's "Edit strength" slider arrives as `strength` (0..1). Map it to
-        # image_guidance_scale, which is INVERTED (higher = keep more of the
-        # original = weaker edit): strength 0 -> 1.8 (subtle), 1 -> 1.1 (strong).
-        # An explicit image_guidance_scale, if sent, always wins.
-        img_guidance = IMAGE_GUIDANCE
-        if inp.get("image_guidance_scale") is not None:
-            img_guidance = float(inp["image_guidance_scale"])
-        elif inp.get("strength") is not None:
-            s = max(0.0, min(1.0, float(inp["strength"])))
-            img_guidance = round(1.8 - s * 0.7, 3)
+        generator = torch.Generator(device="cpu").manual_seed(int(seed)) if seed is not None else None
 
         result = _get_pipe()(
             prompt=prompt,
             image=image,
-            num_inference_steps=steps,
+            height=image.height,
+            width=image.width,
             guidance_scale=guidance,
-            image_guidance_scale=img_guidance,
-            negative_prompt=negative,
+            num_inference_steps=STEPS,
             generator=generator,
         ).images[0]
 

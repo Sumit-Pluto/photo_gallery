@@ -1,5 +1,7 @@
-# RunPod Serverless worker for SD image editing (img2img + inpaint).
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+# RunPod Serverless worker: FLUX.2 [klein] image editing.
+# CUDA 12.8 base + torch cu128 so the build carries kernels for ALL current GPUs
+# (Ampere RTX 3090 … Blackwell RTX PRO 6000) — no more "no kernel image" roulette.
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -12,12 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Paths are relative to the REPO ROOT (RunPod's build context), so reference the
-# subfolder explicitly.
-# Torch first (CUDA 12.1 build), then the rest.
-RUN pip3 install --no-cache-dir torch==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+# torch (CUDA 12.8 build) FIRST — carries Blackwell kernels.
+RUN pip install --upgrade pip && \
+    pip install torch --index-url https://download.pytorch.org/whl/cu128
 COPY runpod-worker/requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
 COPY runpod-worker/handler.py .
 

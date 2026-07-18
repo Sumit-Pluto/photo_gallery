@@ -1,6 +1,12 @@
-runpod==1.7.9
-diffusers==0.31.0
-transformers==4.46.3
-accelerate==1.1.1
-safetensors==0.4.5
+# FLUX.2 [klein] worker. torch is installed (CUDA 12.8 build) FIRST in the
+# Dockerfile so it carries Blackwell kernels; diffusers is from git for the
+# Flux2KleinPipeline. FLUX.2 uses a Mistral-based text encoder → transformers +
+# sentencepiece/protobuf.
+diffusers @ git+https://github.com/huggingface/diffusers.git
+transformers>=4.49.0
+accelerate>=1.2.0
+safetensors>=0.4.5
+sentencepiece>=0.2.0
+protobuf>=4.25.0
 Pillow==10.4.0
+runpod==1.7.9
