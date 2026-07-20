@@ -201,7 +201,6 @@ export function Sidebar() {
       <Row icon="video" label="Videos" view="videos" />
       <Row icon="screenshot" label="Screenshots" view="screenshots" />
       <Row icon="document" label="Documents" view="sys:documents" />
-      <Row icon="person-circle" label="People & Pets" view="people" />
       <Row
         icon="trash"
         label="Recently Deleted"

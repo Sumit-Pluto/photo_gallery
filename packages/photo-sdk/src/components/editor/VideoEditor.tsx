@@ -340,6 +340,21 @@ export function VideoEditor() {
   };
 
   const filterCss = editFilterCss(edits);
+  // Live preview for Crop & Rotate. videoBake applies these on export; without
+  // mirroring them on the preview the Rotate/Flip/Crop buttons look like they do
+  // nothing. Quarter-turn rotations are scaled to fit the frame.
+  const pvRot = (((edits.rotation ?? 0) % 360) + 360) % 360;
+  const pvQuarter = pvRot === 90 || pvRot === 270;
+  const pvAspect = (item.width || 16) / (item.height || 9);
+  const pvFit = pvQuarter ? Math.min(pvAspect, 1 / pvAspect) : 1;
+  const previewTransform =
+    pvRot || edits.flipH || edits.flipV
+      ? `rotate(${pvRot}deg) scale(${(edits.flipH ? -1 : 1) * pvFit}, ${(edits.flipV ? -1 : 1) * pvFit})`
+      : undefined;
+  const pvCrop = edits.crop;
+  const previewClip = pvCrop
+    ? `inset(${(pvCrop.y * 100).toFixed(3)}% ${((1 - pvCrop.x - pvCrop.width) * 100).toFixed(3)}% ${((1 - pvCrop.y - pvCrop.height) * 100).toFixed(3)}% ${(pvCrop.x * 100).toFixed(3)}%)`
+    : undefined;
   const sel = overlays.find((o) => o.id === selOverlay) ?? null;
 
   return (
@@ -386,7 +401,15 @@ export function VideoEditor() {
                 controls
                 playsInline
                 crossOrigin="anonymous"
-                style={{ maxWidth: '100%', maxHeight: '70vh', display: 'block', filter: filterCss || undefined }}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: '70vh',
+                  display: 'block',
+                  filter: filterCss || undefined,
+                  transform: previewTransform,
+                  clipPath: previewClip,
+                  transition: 'transform 0.15s ease',
+                }}
                 onLoadedMetadata={(e) => {
                   const d = e.currentTarget.duration || 0;
                   setDuration(d);
