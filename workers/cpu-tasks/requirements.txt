@@ -1,0 +1,6 @@
+# Combined CPU worker: rembg (bg removal) + ffmpeg denoise. No torch/GPU.
+runpod==1.7.9
+rembg==2.0.59
+onnxruntime==1.17.3
+numpy<2
+Pillow==10.4.0

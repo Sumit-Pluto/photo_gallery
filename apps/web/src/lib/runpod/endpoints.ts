@@ -51,6 +51,7 @@ async function imageOp(
 /** #6 Background removal (U²-Net via rembg). model: u2net | u2netp | u2net_human_seg */
 export function rpRemoveBackground(imageB64: string, model?: string): Promise<RunpodImageResult> {
   return imageOp('background-removal', 'RUNPOD_BG_REMOVE_URL', {
+    task: 'remove-bg',
     image: imageB64,
     ...(model ? { model_name: model } : {}),
   });
@@ -60,6 +61,7 @@ export function rpRemoveBackground(imageB64: string, model?: string): Promise<Ru
  *  op / restore pass) is authoritative — it is not overridden by any env default. */
 export function rpUpscale(imageB64: string, scale: 2 | 4, faceEnhance = false): Promise<RunpodImageResult> {
   return imageOp('upscale', 'RUNPOD_UPSCALE_URL', {
+    task: 'upscale',
     image: imageB64,
     scale,
     face_enhance: faceEnhance,
@@ -77,6 +79,7 @@ export function rpColorize(imageB64: string, inputSize?: number): Promise<Runpod
 /** #9 SD 3.5 masked inpainting (sky fix / eraser / fill). Also #11 outpaint (pre-padded). */
 export function rpInpaint(p: InpaintReq): Promise<RunpodImageResult> {
   const input: Record<string, unknown> = {
+    task: 'inpaint',
     image: p.imageB64,
     mask: p.maskB64,
     prompt: p.prompt,
@@ -93,6 +96,7 @@ export function rpInpaint(p: InpaintReq): Promise<RunpodImageResult> {
 /** #10 SD 3.5 general prompt edit (img2img, no mask). */
 export function rpImg2Img(p: Img2ImgReq): Promise<RunpodImageResult> {
   const input: Record<string, unknown> = {
+    task: 'img2img',
     image: p.imageB64,
     prompt: p.prompt,
     strength: p.strength ?? envNum(process.env.RUNPOD_SD_STRENGTH, 0.6),
@@ -117,7 +121,7 @@ export async function rpDetect(
   const output = await runpodCall<unknown>({
     name: 'yolo-detect',
     url: endpointUrl('RUNPOD_YOLO_URL'),
-    input: { image: imageB64 },
+    input: { image: imageB64, task: 'detect' },
   });
   return normalizeDetections(output, width, height);
 }
@@ -253,7 +257,7 @@ export async function rpTranscribe(
   const o = await runpodCall<Record<string, unknown>>({
     name: 'transcribe',
     url: endpointUrl('RUNPOD_STT_URL'),
-    input: { audio: audioB64, ...(opts ?? {}) },
+    input: { audio: audioB64, task: 'transcribe', ...(opts ?? {}) },
   });
   const rawSegments = Array.isArray(o.segments) ? o.segments : [];
   const segments = rawSegments.map((s) => {
@@ -272,7 +276,7 @@ export async function rpDenoiseAudio(audioB64: string): Promise<{ audioB64: stri
   const o = await runpodCall<Record<string, unknown>>({
     name: 'audio-denoise',
     url: endpointUrl('RUNPOD_AUDIO_DENOISE_URL'),
-    input: { audio: audioB64 },
+    input: { audio: audioB64, task: 'denoise' },
   });
   const a = o.audio ?? o.output ?? '';
   return { audioB64: stripDataUri(String(a)) };
