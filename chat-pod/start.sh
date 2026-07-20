@@ -44,6 +44,11 @@ if [ ! -x "$VENV/bin/uvicorn" ]; then
   "$VENV/bin/pip" install -q --upgrade pip
   "$VENV/bin/pip" install -q ctranslate2 transformers sentencepiece fastapi uvicorn
 fi
+# torch (CPU) is required to CONVERT the NLLB model; ensure it exists on any venv.
+"$VENV/bin/python" -c "import torch" >/dev/null 2>&1 || {
+  echo "[chat-pod] installing CPU torch (needed to convert NLLB)..."
+  "$VENV/bin/pip" install -q torch --index-url https://download.pytorch.org/whl/cpu
+}
 
 # --- 3. Fetch the translate server (always latest from repo) -------------------
 curl -fsSL https://raw.githubusercontent.com/Sumit-Pluto/photo_gallery/main/chat-pod/translate.py -o "$WORK/translate.py" \
@@ -57,8 +62,9 @@ echo "[chat-pod] ensuring model $QWEN_MODEL (first time downloads ~16GB)..."
 ollama pull "$QWEN_MODEL" || echo "[chat-pod] WARN: pull failed (will use cached if present)"
 
 # --- 5. Convert NLLB once (cached on the volume after) ------------------------
-if [ ! -d "$NLLB_CT2" ]; then
+if [ ! -f "$NLLB_CT2/model.bin" ]; then
   echo "[chat-pod] converting NLLB -> CTranslate2 int8 (one time)..."
+  rm -rf "$NLLB_CT2"   # clear any partial/failed conversion
   "$VENV/bin/ct2-transformers-converter" --model "$NLLB_HF" --output_dir "$NLLB_CT2" --quantization int8
 fi
 
