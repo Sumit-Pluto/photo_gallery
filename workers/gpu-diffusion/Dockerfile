@@ -1,14 +1,16 @@
 # Combined GPU diffusion worker: FLUX.2 img2img + SDXL inpaint.
-# CUDA 12.4 + torch cu124 (runs on RTX 3090/4090 driver-550 hosts). Build ctx = repo root.
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# Slim Python base + torch cu124 (torch bundles its own CUDA runtime/cuDNN, so we
+# skip the heavy nvidia/cuda base — that halves the image so it fits the worker's
+# container disk). The host NVIDIA driver is mounted by RunPod; torch supplies the
+# rest. No CUDA-version label = runs on any recent driver. Build ctx = repo root.
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip git && \
-    ln -sf /usr/bin/python3 /usr/bin/python && \
+        git libgomp1 libgl1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
