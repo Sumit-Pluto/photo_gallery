@@ -7,7 +7,7 @@ import { Icon, type IconName } from '../icons';
 import { useGallery, useGalleryStoreApi } from '../store/context';
 import type { Album, ViewId } from '../types';
 import { closeContextMenu, openContextMenu } from './ContextMenu';
-import { openSecuritySettings, promptAlbumName } from './modals';
+import { confirmAction, openSecuritySettings, promptAlbumName } from './modals';
 
 interface RowProps {
   icon: IconName;
@@ -176,6 +176,19 @@ export function Sidebar() {
             (name) => api.getState().renameLabel(label, name),
             { placeholder: 'Tag name' },
           ),
+      },
+      {
+        label: 'Delete Tag',
+        icon: 'trash',
+        danger: true,
+        onClick: () =>
+          confirmAction({
+            title: 'Delete Tag',
+            message: `Remove the "${album.name}" tag? It's deleted from all photos and won't be created again.`,
+            confirmLabel: 'Delete',
+            danger: true,
+            onConfirm: () => api.getState().deleteLabel(label),
+          }),
       },
     ]);
   };

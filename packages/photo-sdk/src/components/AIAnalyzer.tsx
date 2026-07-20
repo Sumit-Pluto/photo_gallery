@@ -105,11 +105,13 @@ export function AIAnalyzer({ provider }: { provider: AIProvider }) {
           // Map each detected label through the user's rename map so future uploads
           // are stored/grouped under the renamed label instead of a fresh class.
           const aliases = api.getState().labelAliases;
+          const deleted = api.getState().deletedLabels;
           patch.objectLabels = [
             ...new Set(
               objects
                 .filter((o) => o.confidence >= CONFIDENCE)
-                .map((o) => resolveLabel(o.label, aliases)),
+                .map((o) => resolveLabel(o.label, aliases))
+                .filter((l) => !deleted.includes(l)),
             ),
           ];
         }

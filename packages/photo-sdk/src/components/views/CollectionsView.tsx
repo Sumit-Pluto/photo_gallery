@@ -10,7 +10,7 @@ import { useGallery, useGalleryStoreApi } from '../../store/context';
 import { albumMedia, liveMedia, objectLabelCounts } from '../../store/selectors';
 import type { MediaItem, ViewId } from '../../types';
 import { openContextMenu } from '../ContextMenu';
-import { promptAlbumName } from '../modals';
+import { confirmAction, promptAlbumName } from '../modals';
 
 function SectionHeader({
   title,
@@ -122,6 +122,19 @@ export function CollectionsView() {
         onClick: () =>
           promptAlbumName('Rename Tag', label, (name) => api.getState().renameLabel(label, name), {
             placeholder: 'Tag name',
+          }),
+      },
+      {
+        label: 'Delete Tag',
+        icon: 'trash',
+        danger: true,
+        onClick: () =>
+          confirmAction({
+            title: 'Delete Tag',
+            message: `Remove the "${label}" tag? It's deleted from all photos and won't be created again.`,
+            confirmLabel: 'Delete',
+            danger: true,
+            onConfirm: () => api.getState().deleteLabel(label),
           }),
       },
     ]);

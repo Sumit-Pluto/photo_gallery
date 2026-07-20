@@ -9,6 +9,7 @@ export interface PersistedState {
    * chosen label). Optional for backward compatibility with pre-rename data.
    */
   labelAliases?: Record<string, string>;
+  deletedLabels?: string[];
   version: number;
 }
 

@@ -103,6 +103,8 @@ export interface GalleryState {
    * Persisted, applied to future uploads, and resolved wherever labels are grouped.
    */
   labelAliases: Record<string, string>;
+  /** Object/material tags the user deleted — stripped from photos + hidden from future detection. */
+  deletedLabels: string[];
 
   // Navigation / view
   view: ViewId;
@@ -212,6 +214,8 @@ export interface GalleryState {
    * albums so the rename applies to past photos and every future upload.
    */
   renameLabel: (from: string, to: string) => void;
+  /** Permanently delete an object/material tag (removes it from photos + future detections). */
+  deleteLabel: (label: string) => void;
 
   // Recently Deleted lock
   setLockPassword: (password: string) => Promise<void>;
@@ -299,10 +303,10 @@ export function createGalleryStore(options: CreateStoreOptions) {
       if (!adapter) return;
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
-        const { media, albums, people, labelAliases } = get();
+        const { media, albums, people, labelAliases, deletedLabels } = get();
         // Only persist user-owned albums; smart/system albums are regenerated.
         const userAlbums = albums.filter((a) => !a.system);
-        void adapter!.save({ media, albums: userAlbums, people, labelAliases, version: 1 });
+        void adapter!.save({ media, albums: userAlbums, people, labelAliases, deletedLabels, version: 1 });
       }, 400);
     };
 
@@ -315,6 +319,7 @@ export function createGalleryStore(options: CreateStoreOptions) {
       albums: [...defaultSystemAlbums(now), ...(options.initialAlbums ?? [])],
       people: options.initialPeople ?? [],
       labelAliases: {},
+      deletedLabels: [],
 
       view: 'library',
       libraryScale: 'all',
@@ -363,6 +368,7 @@ export function createGalleryStore(options: CreateStoreOptions) {
             albums: [...defaultSystemAlbums(ts), ...loaded.albums.filter((al) => !al.system)],
             people: loaded.people ?? [],
             labelAliases: loaded.labelAliases ?? {},
+            deletedLabels: loaded.deletedLabels ?? [],
             ready: true,
             aiAvailable: Boolean(ai),
           });
@@ -949,6 +955,30 @@ export function createGalleryStore(options: CreateStoreOptions) {
           return { labelAliases, media };
         });
         // Rebuild the sys:obj:* albums so the sidebar/Objects re-title live.
+        get().syncObjectAlbums();
+        persist();
+      },
+
+      deleteLabel(label) {
+        const key = label.trim().toLowerCase();
+        if (!key) return;
+        set((s) => {
+          const deletedLabels = s.deletedLabels.includes(key)
+            ? s.deletedLabels
+            : [...s.deletedLabels, key];
+          // Drop any aliases pointing at this label so it can't reappear via a rename.
+          const labelAliases: Record<string, string> = { ...s.labelAliases };
+          for (const k of Object.keys(labelAliases)) {
+            if (k === key || labelAliases[k] === key) delete labelAliases[k];
+          }
+          // Strip the label from every photo so its album empties and it stops matching.
+          const media = s.media.map((m) =>
+            m.objectLabels.some((l) => l.trim().toLowerCase() === key)
+              ? { ...m, objectLabels: m.objectLabels.filter((l) => l.trim().toLowerCase() !== key) }
+              : m,
+          );
+          return { deletedLabels, labelAliases, media };
+        });
         get().syncObjectAlbums();
         persist();
       },

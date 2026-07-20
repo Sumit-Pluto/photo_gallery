@@ -52,11 +52,15 @@ export function createLocalStorageAdapter(key: string = STORAGE_KEY): StorageAda
                 ),
               )
             : {};
+        const deletedLabels: string[] = Array.isArray(parsed.deletedLabels)
+          ? (parsed.deletedLabels as unknown[]).filter((l): l is string => typeof l === 'string')
+          : [];
         return {
           media,
           albums,
           people: Array.isArray(parsed.people) ? parsed.people : [],
           labelAliases,
+          deletedLabels,
           version: typeof parsed.version === 'number' ? parsed.version : CURRENT_VERSION,
         };
       } catch {
