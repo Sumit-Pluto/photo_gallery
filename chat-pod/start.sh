@@ -25,6 +25,12 @@ QWEN_MODEL="${QWEN_MODEL:-qwen2.5:14b-instruct-q8_0}"   # 8-bit ~16GB; override 
 mkdir -p "$WORK" "$OLLAMA_MODELS"
 echo "[chat-pod] boot — models/deps on $WORK (persist across Stop/Resume)"
 
+# --- 0. system deps: lspci lets Ollama auto-detect the GPU (else it may use CPU) ---
+if ! command -v lspci >/dev/null 2>&1; then
+  echo "[chat-pod] installing pciutils (GPU detection)..."
+  apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq pciutils >/dev/null 2>&1 || true
+fi
+
 # --- 1. Ollama (installs to container disk; reinstalled cheaply if missing) ----
 if ! command -v ollama >/dev/null 2>&1; then
   echo "[chat-pod] installing Ollama..."
